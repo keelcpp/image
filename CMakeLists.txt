@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(keel_image_formats VERSION 0.1.0 LANGUAGES CXX)
+project(keel_image VERSION 0.1.0 LANGUAGES CXX)
 
-option(KEEL_IMAGE_FORMATS_NO_EXCEPTIONS_RTTI "Compile keel_image_formats without C++ exceptions and RTTI" OFF)
-option(KEEL_IMAGE_FORMATS_BUILD_TESTS "Build keel_image_formats unit tests and header purity checks" ${PROJECT_IS_TOP_LEVEL})
-option(KEEL_IMAGE_FORMATS_UNITY_BUILD "Enable unity build on keel_image_formats" OFF)
+option(KEEL_IMAGE_NO_EXCEPTIONS_RTTI "Compile keel_image without C++ exceptions and RTTI" OFF)
+option(KEEL_IMAGE_BUILD_TESTS "Build keel_image unit tests and header purity checks" ${PROJECT_IS_TOP_LEVEL})
+option(KEEL_IMAGE_UNITY_BUILD "Enable unity build on keel_image" OFF)
 
 if(NOT TARGET keel::keel)
     find_package(keel QUIET CONFIG)
@@ -13,7 +13,7 @@ if(NOT TARGET keel::keel)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../keel/CMakeLists.txt" AND NOT DEFINED FETCHCONTENT_SOURCE_DIR_KEEL)
         set(FETCHCONTENT_SOURCE_DIR_KEEL "${CMAKE_CURRENT_SOURCE_DIR}/../keel" CACHE PATH "Local keel checkout")
     endif()
-    if(KEEL_IMAGE_FORMATS_NO_EXCEPTIONS_RTTI)
+    if(KEEL_IMAGE_NO_EXCEPTIONS_RTTI)
         set(KEEL_NO_EXCEPTIONS_RTTI ON CACHE BOOL "" FORCE)
     endif()
     FetchContent_Declare(
@@ -35,7 +35,7 @@ if(NOT TARGET keel::compress)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../compress/CMakeLists.txt" AND NOT DEFINED FETCHCONTENT_SOURCE_DIR_KEEL_COMPRESS)
         set(FETCHCONTENT_SOURCE_DIR_KEEL_COMPRESS "${CMAKE_CURRENT_SOURCE_DIR}/../compress" CACHE PATH "Local keel_compress checkout")
     endif()
-    if(KEEL_IMAGE_FORMATS_NO_EXCEPTIONS_RTTI)
+    if(KEEL_IMAGE_NO_EXCEPTIONS_RTTI)
         set(KEEL_COMPRESS_NO_EXCEPTIONS_RTTI ON CACHE BOOL "" FORCE)
     endif()
     FetchContent_Declare(
@@ -46,7 +46,7 @@ if(NOT TARGET keel::compress)
     FetchContent_MakeAvailable(keel_compress)
 endif()
 
-add_library(keel_image_formats STATIC
+add_library(keel_image STATIC
     src/image.cpp
     src/png.cpp
     src/jpeg.cpp
@@ -56,86 +56,86 @@ add_library(keel_image_formats STATIC
     src/pnm.cpp
     src/gif.cpp
 )
-add_library(keel::image_formats ALIAS keel_image_formats)
+add_library(keel::image ALIAS keel_image)
 
-target_link_libraries(keel_image_formats
+target_link_libraries(keel_image
     PUBLIC  keel::keel
     PRIVATE keel::compress
 )
-target_compile_features(keel_image_formats PUBLIC cxx_std_20)
-set_target_properties(keel_image_formats PROPERTIES
+target_compile_features(keel_image PUBLIC cxx_std_20)
+set_target_properties(keel_image PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )
 
-if(KEEL_IMAGE_FORMATS_UNITY_BUILD)
-    set_target_properties(keel_image_formats PROPERTIES UNITY_BUILD ON)
+if(KEEL_IMAGE_UNITY_BUILD)
+    set_target_properties(keel_image PROPERTIES UNITY_BUILD ON)
 endif()
 
-target_include_directories(keel_image_formats PUBLIC
+target_include_directories(keel_image PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
 if(MSVC)
-    target_compile_options(keel_image_formats PRIVATE /W4 /utf-8)
-    if(KEEL_IMAGE_FORMATS_NO_EXCEPTIONS_RTTI)
+    target_compile_options(keel_image PRIVATE /W4 /utf-8)
+    if(KEEL_IMAGE_NO_EXCEPTIONS_RTTI)
         string(REGEX REPLACE "/EH[a-z]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
         string(REGEX REPLACE "/GR" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-        target_compile_options(keel_image_formats PUBLIC /EHs-c- /GR-)
-        target_compile_definitions(keel_image_formats PUBLIC _HAS_EXCEPTIONS=0)
+        target_compile_options(keel_image PUBLIC /EHs-c- /GR-)
+        target_compile_definitions(keel_image PUBLIC _HAS_EXCEPTIONS=0)
     endif()
 else()
-    target_compile_options(keel_image_formats PRIVATE -Wall -Wextra -Wpedantic)
-    if(KEEL_IMAGE_FORMATS_NO_EXCEPTIONS_RTTI)
-        target_compile_options(keel_image_formats PUBLIC -fno-exceptions -fno-rtti)
+    target_compile_options(keel_image PRIVATE -Wall -Wextra -Wpedantic)
+    if(KEEL_IMAGE_NO_EXCEPTIONS_RTTI)
+        target_compile_options(keel_image PUBLIC -fno-exceptions -fno-rtti)
     endif()
 endif()
 
 include(CMakePackageConfigHelpers)
-install(TARGETS keel_image_formats EXPORT keel_image_formatsTargets
+install(TARGETS keel_image EXPORT keel_imageTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
 install(DIRECTORY include/keel DESTINATION include)
-install(EXPORT keel_image_formatsTargets
-    FILE keel_image_formatsTargets.cmake
+install(EXPORT keel_imageTargets
+    FILE keel_imageTargets.cmake
     NAMESPACE keel::
-    DESTINATION lib/cmake/keel_image_formats
+    DESTINATION lib/cmake/keel_image
 )
 configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/keel_image_formatsConfig.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/keel_image_formatsConfig.cmake"
-    INSTALL_DESTINATION lib/cmake/keel_image_formats
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/keel_imageConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/keel_imageConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/keel_image
 )
 write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/keel_image_formatsConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/keel_imageConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMinorVersion
 )
 install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/keel_image_formatsConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/keel_image_formatsConfigVersion.cmake"
-    DESTINATION lib/cmake/keel_image_formats
+    "${CMAKE_CURRENT_BINARY_DIR}/keel_imageConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/keel_imageConfigVersion.cmake"
+    DESTINATION lib/cmake/keel_image
 )
 
-if(KEEL_IMAGE_FORMATS_BUILD_TESTS)
+if(KEEL_IMAGE_BUILD_TESTS)
     enable_testing()
 
-    add_executable(test_image_formats tests/test_image_formats.cpp)
-    target_link_libraries(test_image_formats PRIVATE keel::image_formats)
-    target_compile_definitions(test_image_formats PRIVATE
-        KEEL_IMAGE_FORMATS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    add_executable(test_image tests/test_image.cpp)
+    target_link_libraries(test_image PRIVATE keel::image)
+    target_compile_definitions(test_image PRIVATE
+        KEEL_IMAGE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
     )
     if(MSVC)
-        target_compile_options(test_image_formats PRIVATE /W4 /utf-8)
+        target_compile_options(test_image PRIVATE /W4 /utf-8)
     else()
-        target_compile_options(test_image_formats PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(test_image PRIVATE -Wall -Wextra -Wpedantic)
     endif()
-    add_test(NAME test_image_formats COMMAND test_image_formats)
+    add_test(NAME test_image COMMAND test_image)
 
     get_target_property(KEEL_CORE_INC_DIRS keel::keel INTERFACE_INCLUDE_DIRECTORIES)
     set(KEEL_CORE_INC_CLEAN "")

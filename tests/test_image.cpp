@@ -9,8 +9,8 @@
 
 using namespace keel;
 
-#ifndef KEEL_IMAGE_FORMATS_FIXTURES_DIR
-#define KEEL_IMAGE_FORMATS_FIXTURES_DIR "tests/fixtures"
+#ifndef KEEL_IMAGE_FIXTURES_DIR
+#define KEEL_IMAGE_FIXTURES_DIR "tests/fixtures"
 #endif
 
 namespace {
@@ -872,7 +872,7 @@ void test_gif() {
 
 Array<u8> load_fixture(const char* name) {
     char path[1024];
-    std::snprintf(path, sizeof(path), "%s/%s", KEEL_IMAGE_FORMATS_FIXTURES_DIR, name);
+    std::snprintf(path, sizeof(path), "%s/%s", KEEL_IMAGE_FIXTURES_DIR, name);
     auto r = fs_read_file(StringRef(path, std::strlen(path)));
     TEST_CHECK(r.is_ok());
     return r.is_ok() ? keel::move(*r) : Array<u8>{};
@@ -1318,6 +1318,6 @@ int main() {
         std::fprintf(stderr, "%d test check(s) FAILED (%d passed)\n", g_tests_failed, g_tests_passed);
         return 1;
     }
-    std::printf("All %d keel::image_formats test checks passed.\n", g_tests_passed);
+    std::printf("All %d keel::image test checks passed.\n", g_tests_passed);
     return 0;
 }

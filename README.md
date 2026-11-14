@@ -1,4 +1,4 @@
-# keelcpp/image-formats
+# keelcpp/image
 
 Lightweight C++20 image decoding, encoding, and header inspection library built on [`keelcpp/keel`](https://github.com/keelcpp/keel) and [`keelcpp/compress`](https://github.com/keelcpp/compress) under the `0BSD` license.
 
@@ -19,4 +19,4 @@ Lightweight C++20 image decoding, encoding, and header inspection library built 
 
 ## CMake Integration
 
-Links as `keel::image_formats` (`find_package(keel_image_formats)` or `FetchContent`).
+Links as `keel::image` (`find_package(keel_image)` or `FetchContent`).
