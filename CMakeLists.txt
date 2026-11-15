@@ -19,7 +19,7 @@ if(NOT TARGET keel::keel)
     FetchContent_Declare(
         keel
         GIT_REPOSITORY https://github.com/keelcpp/keel.git
-        GIT_TAG        042c102203a5d07389a1e974b0a9c342503519c6
+        GIT_TAG        ca7fb3ed8f781d0b7af113422cdaa70a6da6eae4
     )
     FetchContent_MakeAvailable(keel)
 endif()
@@ -41,7 +41,7 @@ if(NOT TARGET keel::compress)
     FetchContent_Declare(
         keel_compress
         GIT_REPOSITORY https://github.com/keelcpp/compress.git
-        GIT_TAG        529578dc5b99987dc2cc5d6d6ddd928eaa6f4943
+        GIT_TAG        e426c71ed8d267e488119272c0e066e1da2f720e
     )
     FetchContent_MakeAvailable(keel_compress)
 endif()
