@@ -3,7 +3,7 @@
 #include "keel/array.h"
 #include "keel/result.h"
 
-namespace keel {
+namespace keel::image {
 
 enum class ImageFormat : u8 {
     Unknown = 0,
@@ -217,4 +217,4 @@ struct PnmEncodeOptions {
 [[nodiscard]] Result<Array<u8>> encode_image(const ImageView& view, ImageFormat fmt, Allocator* alloc = nullptr);
 [[nodiscard]] Result<void> write_image(StringRef path, const ImageView& view);
 
-} // namespace keel
+} // namespace keel::image

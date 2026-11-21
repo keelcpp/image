@@ -2,7 +2,7 @@
 
 #include "keel/compress.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace png_impl {
@@ -65,7 +65,7 @@ struct PngIhdr {
     }
 
     const u32 expected_crc = detail::read_u32_be(data + 8 + 4 + 4 + 13);
-    const u32 actual_crc = crc32(ArrayRef<u8>(data + 12, 4 + 13));
+    const u32 actual_crc = keel::compress::crc32(ArrayRef<u8>(data + 12, 4 + 13));
     if (expected_crc != actual_crc) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
@@ -215,7 +215,7 @@ void append_chunk(Array<u8>& out, const char type[4], const u8* payload, usize p
     if (payload_len > 0 && payload != nullptr) {
         out.append(ArrayRef<u8>(payload, payload_len));
     }
-    const u32 c = crc32(out.slice(type_pos, 4u + payload_len));
+    const u32 c = keel::compress::crc32(out.slice(type_pos, 4u + payload_len));
     detail::push_u32_be(out, c);
 }
 
@@ -270,7 +270,7 @@ Result<Image> decode_png(ArrayRef<u8> bytes, const ImageDecodeOptions& opts) {
         const u8* chunk_type = data + offset + 4u;
         const u8* chunk_data = data + offset + 8u;
         const u32 expected_crc = detail::read_u32_be(data + offset + 8u + chunk_len);
-        const u32 actual_crc = crc32(ArrayRef<u8>(chunk_type, 4u + chunk_len));
+        const u32 actual_crc = keel::compress::crc32(ArrayRef<u8>(chunk_type, 4u + chunk_len));
         if (expected_crc != actual_crc) [[unlikely]] {
             return ErrorCode::InvalidData;
         }
@@ -348,12 +348,12 @@ Result<Image> decode_png(ArrayRef<u8> bytes, const ImageDecodeOptions& opts) {
         return ErrorCode::OutOfRange;
     }
 
-    InflateOptions inf_opts;
+    keel::compress::InflateOptions inf_opts;
     inf_opts.expected_size_hint = expected_raw_bytes;
     inf_opts.max_output_bytes = (opts.max_bytes > 0) ? (expected_raw_bytes + 1024u) : 0u;
     inf_opts.allocator = scratch.allocator();
 
-    KEEL_TRY_ASSIGN(Array<u8> raw_scanlines, zlib_decompress(idat_stream, inf_opts));
+    KEEL_TRY_ASSIGN(Array<u8> raw_scanlines, keel::compress::zlib_decompress(idat_stream, inf_opts));
     if (raw_scanlines.size() < expected_raw_bytes) [[unlikely]] {
         return ErrorCode::InvalidData;
     }
@@ -482,7 +482,7 @@ Result<Array<u8>> encode_png(const ImageView& view, const PngEncodeOptions& opts
     }
 
     const int level = keel::clamp(opts.compression_level, 0, 9);
-    Array<u8> compressed = zlib_compress(filtered, level, scratch.allocator());
+    Array<u8> compressed = keel::compress::zlib_compress(filtered, level, scratch.allocator());
 
     Array<u8> out(dst_alloc);
     out.reserve(8u + 25u + (has_palette ? (12u + opts.palette.size()) : 0u) + 12u + compressed.size() + 12u);
@@ -518,4 +518,4 @@ Result<Array<u8>> encode_png(const ImageView& view, const PngEncodeOptions& opts
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image

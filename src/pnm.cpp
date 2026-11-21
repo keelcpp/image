@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace pnm_impl {
@@ -349,4 +349,4 @@ Result<Array<u8>> encode_pnm(const ImageView& view, const PnmEncodeOptions& opts
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image

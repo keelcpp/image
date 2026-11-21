@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace gif_impl {
@@ -276,4 +276,4 @@ Result<Image> decode_gif(ArrayRef<u8> bytes, const ImageDecodeOptions& opts) {
     return img;
 }
 
-} // namespace keel
+} // namespace keel::image

@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace tga_impl {
@@ -297,4 +297,4 @@ Result<Array<u8>> encode_tga(const ImageView& view, Allocator* alloc) {
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image

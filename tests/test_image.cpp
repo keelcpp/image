@@ -8,6 +8,7 @@
 #include <cstring>
 
 using namespace keel;
+using namespace keel::image;
 
 #ifndef KEEL_IMAGE_FIXTURES_DIR
 #define KEEL_IMAGE_FIXTURES_DIR "tests/fixtures"

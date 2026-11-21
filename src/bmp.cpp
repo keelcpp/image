@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace bmp_impl {
@@ -403,4 +403,4 @@ Result<Array<u8>> encode_bmp(const ImageView& view, Allocator* alloc) {
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image

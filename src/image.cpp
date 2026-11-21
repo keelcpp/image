@@ -2,7 +2,7 @@
 
 #include "keel/fs.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace image_impl {
@@ -291,4 +291,4 @@ Result<void> write_image(StringRef path, const ImageView& view) {
     return {};
 }
 
-} // namespace keel
+} // namespace keel::image

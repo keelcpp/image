@@ -5,7 +5,7 @@
 #include "keel/arena.h"
 #include "keel/bits.h"
 
-namespace keel::detail {
+namespace keel::image::detail {
 
 [[nodiscard]] inline bool is_host_big_endian() noexcept {
 #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
@@ -156,4 +156,4 @@ struct ValidatedView {
     return ValidatedView{.tight_row_bytes = tight_row, .stride_bytes = stride};
 }
 
-} // namespace keel::detail
+} // namespace keel::image::detail

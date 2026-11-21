@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-namespace keel {
+namespace keel::image {
 
 namespace {
 namespace jpeg_impl {
@@ -1108,4 +1108,4 @@ Result<Array<u8>> encode_jpeg(const ImageView& view, const JpegEncodeOptions& op
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image

@@ -2,7 +2,7 @@
 
 #include "keel/compress.h"
 
-namespace keel {
+namespace keel::image {
 
 bool is_tiff_bytes(ArrayRef<u8> bytes) noexcept {
     if (bytes.size() < 4) return false;
@@ -589,17 +589,17 @@ struct TiffIfdInfo {
             return decode_lzw(src, cnt, hint_bytes, max_out, arena, alloc);
         case 8u:
         case 32946u: {
-            const InflateOptions inf_opts{
+            const keel::compress::InflateOptions inf_opts{
                 .expected_size_hint = hint_bytes,
                 .max_output_bytes = max_out,
                 .allocator = alloc,
             };
-            auto res = zlib_decompress(ArrayRef<u8>(src, cnt), inf_opts);
+            auto res = keel::compress::zlib_decompress(ArrayRef<u8>(src, cnt), inf_opts);
             if (res.is_ok() || res.error().code == ErrorCode::OutOfRange) {
                 return res;
             }
             // Fallback for rare raw-Deflate TIFF strips without RFC 1950 wrapper.
-            return inflate_raw(ArrayRef<u8>(src, cnt), inf_opts);
+            return keel::compress::inflate_raw(ArrayRef<u8>(src, cnt), inf_opts);
         }
         default:
             return ErrorCode::NotSupported;
@@ -1227,7 +1227,7 @@ Result<Image> decode_tiff(ArrayRef<u8> bytes, const ImageDecodeOptions& opts) {
     };
 
     // Use default heap allocator for temporary decompressed blocks when large so the 64 MiB arena stays free.
-    const usize block_max_out = (opts.max_bytes > 0) ? (opts.max_bytes * 2u + 65536u) : kDefaultMaxDecompressBytes;
+    const usize block_max_out = (opts.max_bytes > 0) ? (opts.max_bytes * 2u + 65536u) : keel::compress::kDefaultMaxDecompressBytes;
 
     if (tiled) {
         const usize tw = timg.tile_width;
@@ -1432,7 +1432,7 @@ Result<Array<u8>> encode_tiff(const ImageView& view, const TiffEncodeOptions& op
             strip = tiff_impl::encode_lzw(raw_bytes.data(), raw_bytes.size(), scratch.arena(), work_alloc);
             break;
         case TiffCompression::Deflate:
-            strip = zlib_compress(raw_bytes.as_ref(), 6, work_alloc);
+            strip = keel::compress::zlib_compress(raw_bytes.as_ref(), 6, work_alloc);
             break;
     }
 
@@ -1547,4 +1547,4 @@ Result<Array<u8>> encode_tiff(const ImageView& view, const TiffEncodeOptions& op
     return out;
 }
 
-} // namespace keel
+} // namespace keel::image
