@@ -1,220 +1,136 @@
 #pragma once
 
-#include "keel/array.h"
-#include "keel/result.h"
+#include "keel/complex.h"
+#include "keel/core.h"
+#include "keel/memory.h"
+#include "keel/ref.h"
 
 namespace keel::image {
 
-enum class ImageFormat : u8 {
-    Unknown = 0,
-    Png,
-    Jpeg,
-    Tiff,
-    Bmp,
-    Tga,
-    Pnm,
-    Gif,
+enum class ImageStatus : u8 {
+    kOk = 0,
+    kInvalidArgument,
 };
 
-enum class SampleType : u8 {
-    U8 = 0,
-    U16,
-    U32,
-    I8,
-    I16,
-    I32,
-    F32,
-    F64,
+struct Color3 {
+    f64 c0 = 0.0;
+    f64 c1 = 0.0;
+    f64 c2 = 0.0;
 };
 
-[[nodiscard]] constexpr usize sample_byte_size(SampleType t) noexcept {
-    switch (t) {
-        case SampleType::U8:
-        case SampleType::I8:
-            return 1;
-        case SampleType::U16:
-        case SampleType::I16:
-            return 2;
-        case SampleType::U32:
-        case SampleType::I32:
-        case SampleType::F32:
-            return 4;
-        case SampleType::F64:
-            return 8;
-    }
-    return 1;
-}
-
-[[nodiscard]] constexpr u16 sample_bit_depth(SampleType t) noexcept {
-    return static_cast<u16>(sample_byte_size(t) * 8u);
-}
-
-struct ImageInfo {
-    ImageFormat format = ImageFormat::Unknown;
-    u32 width = 0;
-    u32 height = 0;
-    u16 channels = 0;
-    u16 bits_per_sample = 0;
-    SampleType sample_type = SampleType::U8;
-    bool has_palette = false;
-    u32 page_count = 1;
+struct OtsuResult {
+    f64 threshold = 0.0;     // Normalized threshold in [0, 1] (`bin_level / (L - 1)`)
+    f64 effectiveness = 0.0; // Separability metric eta = sigma_b^2 / sigma_T^2 in [0, 1]
+    f64 bin_level = 0.0;     // 0-based mean of tied optimal bin indices
 };
 
-struct ImageDecodeOptions {
-    u32 max_width = 65535;
-    u32 max_height = 65535;
-    usize max_pixels = 256ULL * 1024 * 1024;
-    usize max_bytes = 512ULL * 1024 * 1024;
-    u32 page = 0;               // 0-based IFD page index for multi-page TIFF
-    bool expand_indexed = false; // If true, indexed PNG/TIFF/GIF images expand to 3-channel RGB
-    Allocator* allocator = nullptr;
-};
+// ============================================================================
+// Color-Space Conversions (Per-Pixel)
+// ============================================================================
 
-struct ImageView {
-    u32 width = 0;
-    u32 height = 0;
-    u16 channels = 0;
-    SampleType sample_type = SampleType::U8;
-    usize row_stride_bytes = 0; // 0 means tightly packed: width * channels * sample_byte_size(sample_type)
-    ArrayRef<u8> pixels{};
+[[nodiscard]] f64 rgb_to_gray(f64 r, f64 g, f64 b) noexcept;
 
-    [[nodiscard]] constexpr usize effective_row_stride() const noexcept {
-        return (row_stride_bytes != 0)
-                   ? row_stride_bytes
-                   : (static_cast<usize>(width) * static_cast<usize>(channels) * sample_byte_size(sample_type));
-    }
+[[nodiscard]] f64 srgb_to_linear(f64 c) noexcept;
+[[nodiscard]] f64 linear_to_srgb(f64 c) noexcept;
 
-    [[nodiscard]] constexpr bool empty() const noexcept {
-        return width == 0 || height == 0 || channels == 0 || pixels.empty();
-    }
-};
+[[nodiscard]] Color3 rgb_to_hsv(f64 r, f64 g, f64 b) noexcept;
+[[nodiscard]] Color3 hsv_to_rgb(f64 h, f64 s, f64 v) noexcept;
 
-// Owning row-major interleaved image buffer.
-// Pixel (r, c) channel `ch` resides at sample index `(r * width + c) * channels + ch` in native endianness.
-// For indexed PNG (`colorType == 3`), TIFF (`Photometric == 3`), and GIF images:
-//   - `channels == 1` and `pixels` holds unpacked index values (`SampleType::U8` or `SampleType::U16`).
-//   - `palette` holds `3 * N` interleaved RGB entries `[R0, G0, B0, R1, G1, B1, ...]`.
-//   - `palette_bits` is `8` for `[0..255]` entries (PNG/GIF) or `16` for `[0..65535]` entries (TIFF).
-struct Image {
-    u32 width = 0;
-    u32 height = 0;
-    u16 channels = 0;
-    SampleType sample_type = SampleType::U8;
-    u8 palette_bits = 0;
-    Array<u8> pixels;
-    Array<u16> palette;
+[[nodiscard]] Color3 rgb_to_ntsc(f64 r, f64 g, f64 b) noexcept;
+[[nodiscard]] Color3 ntsc_to_rgb(f64 y, f64 i, f64 q) noexcept;
 
-    [[nodiscard]] bool empty() const noexcept { return width == 0 || height == 0 || pixels.empty(); }
-    [[nodiscard]] bool has_palette() const noexcept { return palette_bits != 0 && !palette.empty(); }
-    [[nodiscard]] usize palette_entry_count() const noexcept { return palette.size() / 3u; }
-    [[nodiscard]] usize row_stride_bytes() const noexcept {
-        return static_cast<usize>(width) * static_cast<usize>(channels) * sample_byte_size(sample_type);
-    }
+[[nodiscard]] Color3 rgb_to_ycbcr(f64 r, f64 g, f64 b) noexcept;
+[[nodiscard]] Color3 ycbcr_to_rgb(f64 y, f64 cb, f64 cr) noexcept;
 
-    [[nodiscard]] ImageView view() const noexcept KEEL_LIFETIMEBOUND {
-        return ImageView{
-            .width = width,
-            .height = height,
-            .channels = channels,
-            .sample_type = sample_type,
-            .row_stride_bytes = row_stride_bytes(),
-            .pixels = pixels.as_ref(),
-        };
-    }
+[[nodiscard]] Color3 rgb_to_xyz(f64 r, f64 g, f64 b) noexcept;
+[[nodiscard]] Color3 xyz_to_rgb(f64 x, f64 y, f64 z) noexcept;
 
-    [[nodiscard]] operator ImageView() const noexcept KEEL_LIFETIMEBOUND { return view(); }
+[[nodiscard]] Color3 xyz_to_lab(f64 x, f64 y, f64 z) noexcept;
+[[nodiscard]] Color3 lab_to_xyz(f64 l, f64 a, f64 b) noexcept;
 
-    [[nodiscard]] Image clone(Allocator* alloc = nullptr) const {
-        Image copy;
-        copy.width = width;
-        copy.height = height;
-        copy.channels = channels;
-        copy.sample_type = sample_type;
-        copy.palette_bits = palette_bits;
-        copy.pixels = pixels.clone(alloc);
-        copy.palette = palette.clone(alloc);
-        return copy;
-    }
-};
+[[nodiscard]] Color3 rgb_to_lab(f64 r, f64 g, f64 b) noexcept;
+[[nodiscard]] Color3 lab_to_rgb(f64 l, f64 a, f64 b) noexcept;
 
-// Expands an indexed 1-channel `Image` with a populated `palette` into a 3-channel RGB `Image`
-// (`SampleType::U8` when `palette_bits == 8`, `SampleType::U16` when `palette_bits == 16`).
-[[nodiscard]] Result<Image> expand_palette(const Image& indexed, Allocator* alloc = nullptr);
+// ============================================================================
+// Color-Space Conversions (Planar Batches)
+// ============================================================================
+// Planar layout: each channel is a contiguous ArrayRef of length `npix`.
 
-// Format sniffing & header inspection without decoding pixel payloads.
-[[nodiscard]] bool is_tiff_bytes(ArrayRef<u8> bytes) noexcept;
-[[nodiscard]] ImageFormat sniff_image_format(ArrayRef<u8> bytes) noexcept;
+[[nodiscard]] ImageStatus rgb_to_gray_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                             MutArrayRef<f64> gray) noexcept;
+[[nodiscard]] ImageStatus rgb_to_gray_u8_planar(ArrayRef<u8> r, ArrayRef<u8> g, ArrayRef<u8> b,
+                                                MutArrayRef<u8> gray) noexcept;
 
-[[nodiscard]] Result<ImageInfo> peek_image(ArrayRef<u8> bytes, ImageFormat hint = ImageFormat::Unknown);
-[[nodiscard]] Result<ImageInfo> peek_png(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_jpeg(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_tiff(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_bmp(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_tga(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_pnm(ArrayRef<u8> bytes);
-[[nodiscard]] Result<ImageInfo> peek_gif(ArrayRef<u8> bytes);
-[[nodiscard]] Result<u32> tiff_page_count(ArrayRef<u8> bytes);
+[[nodiscard]] ImageStatus rgb_to_hsv_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                            MutArrayRef<f64> h, MutArrayRef<f64> s,
+                                            MutArrayRef<f64> v) noexcept;
+[[nodiscard]] ImageStatus hsv_to_rgb_planar(ArrayRef<f64> h, ArrayRef<f64> s, ArrayRef<f64> v,
+                                            MutArrayRef<f64> r, MutArrayRef<f64> g,
+                                            MutArrayRef<f64> b) noexcept;
 
-// In-memory decoding.
-[[nodiscard]] Result<Image> decode_image(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_png(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_jpeg(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_tiff(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_bmp(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_tga(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_pnm(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
-[[nodiscard]] Result<Image> decode_gif(ArrayRef<u8> bytes, const ImageDecodeOptions& opts = {});
+[[nodiscard]] ImageStatus rgb_to_ycbcr_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                              MutArrayRef<f64> y, MutArrayRef<f64> cb,
+                                              MutArrayRef<f64> cr) noexcept;
+[[nodiscard]] ImageStatus ycbcr_to_rgb_planar(ArrayRef<f64> y, ArrayRef<f64> cb, ArrayRef<f64> cr,
+                                              MutArrayRef<f64> r, MutArrayRef<f64> g,
+                                              MutArrayRef<f64> b) noexcept;
 
-// File-based inspection & decoding.
-[[nodiscard]] Result<ImageInfo> peek_image_file(StringRef path);
-[[nodiscard]] Result<Image> read_image(StringRef path, const ImageDecodeOptions& opts = {});
+[[nodiscard]] ImageStatus rgb_to_xyz_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                            MutArrayRef<f64> x, MutArrayRef<f64> y,
+                                            MutArrayRef<f64> z) noexcept;
+[[nodiscard]] ImageStatus xyz_to_rgb_planar(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> z,
+                                            MutArrayRef<f64> r, MutArrayRef<f64> g,
+                                            MutArrayRef<f64> b) noexcept;
 
-// Encoding options & format encoders.
-enum class PnmSubformat : u8 {
-    Auto = 0,
-    Pbm,
-    Pgm,
-    Ppm,
-};
+[[nodiscard]] ImageStatus xyz_to_lab_planar(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> z,
+                                            MutArrayRef<f64> l, MutArrayRef<f64> a,
+                                            MutArrayRef<f64> b) noexcept;
+[[nodiscard]] ImageStatus lab_to_xyz_planar(ArrayRef<f64> l, ArrayRef<f64> a, ArrayRef<f64> b,
+                                            MutArrayRef<f64> x, MutArrayRef<f64> y,
+                                            MutArrayRef<f64> z) noexcept;
 
-enum class TiffCompression : u8 {
-    None = 0,
-    PackBits,
-    Lzw,
-    Deflate,
-};
+[[nodiscard]] ImageStatus rgb_to_lab_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                            MutArrayRef<f64> l, MutArrayRef<f64> a,
+                                            MutArrayRef<f64> out_b) noexcept;
+[[nodiscard]] ImageStatus lab_to_rgb_planar(ArrayRef<f64> l, ArrayRef<f64> a, ArrayRef<f64> in_b,
+                                            MutArrayRef<f64> r, MutArrayRef<f64> g,
+                                            MutArrayRef<f64> b) noexcept;
 
-struct PngEncodeOptions {
-    int compression_level = 6;
-    Allocator* allocator = nullptr;
-    ArrayRef<u16> palette{}; // Optional RGB palette [R0, G0, B0, ...] (0..255) for 1-channel U8 indexed PNG
-};
+// ============================================================================
+// Image Quality, Statistics & 2D Correlation
+// ============================================================================
 
-struct JpegEncodeOptions {
-    int quality = 90;
-    Allocator* allocator = nullptr;
-};
+[[nodiscard]] f64 mse(ArrayRef<f64> a, ArrayRef<f64> b) noexcept;
+[[nodiscard]] f64 mse_c64(ArrayRef<c64> a, ArrayRef<c64> b) noexcept;
+[[nodiscard]] f64 psnr(ArrayRef<f64> a, ArrayRef<f64> b, f64 peak = 1.0) noexcept;
 
-struct TiffEncodeOptions {
-    TiffCompression compression = TiffCompression::None;
-    Allocator* allocator = nullptr;
-    bool bigtiff = false; // Force 64-bit BigTIFF container even when < 4 GiB
-};
+[[nodiscard]] f64 mean2(ArrayRef<f64> img) noexcept;
+[[nodiscard]] f64 std2(ArrayRef<f64> img) noexcept;
 
-struct PnmEncodeOptions {
-    PnmSubformat subformat = PnmSubformat::Auto;
-    Allocator* allocator = nullptr;
-};
+// Normalized 2D Gaussian kernel (column-major `height x width`).
+[[nodiscard]] ImageStatus gaussian_kernel_2d(usize height, usize width, f64 sigma,
+                                             MutArrayRef<f64> out_col_major) noexcept;
 
-[[nodiscard]] Result<Array<u8>> encode_png(const ImageView& view, const PngEncodeOptions& opts = {});
-[[nodiscard]] Result<Array<u8>> encode_jpeg(const ImageView& view, const JpegEncodeOptions& opts = {});
-[[nodiscard]] Result<Array<u8>> encode_bmp(const ImageView& view, Allocator* alloc = nullptr);
-[[nodiscard]] Result<Array<u8>> encode_tga(const ImageView& view, Allocator* alloc = nullptr);
-[[nodiscard]] Result<Array<u8>> encode_pnm(const ImageView& view, const PnmEncodeOptions& opts = {});
-[[nodiscard]] Result<Array<u8>> encode_tiff(
-    const ImageView& view, const TiffEncodeOptions& opts = {}, ArrayRef<u8> append_to_existing = {});
+// Same-size 2D correlation with replicate border padding (column-major).
+[[nodiscard]] ImageStatus correlate_2d_replicate(ArrayRef<f64> img_col_major, usize height,
+                                                 usize width, ArrayRef<f64> kernel_col_major,
+                                                 usize kh, usize kw,
+                                                 MutArrayRef<f64> out_col_major) noexcept;
 
-[[nodiscard]] Result<Array<u8>> encode_image(const ImageView& view, ImageFormat fmt, Allocator* alloc = nullptr);
-[[nodiscard]] Result<void> write_image(StringRef path, const ImageView& view);
+// Structural Similarity Index (Wang et al., 11x11 Gaussian sigma=1.5, replicate padding).
+// Expects column-major `height x width` images scaled to `[0, dynamic_range]`.
+[[nodiscard]] f64 ssim(ArrayRef<f64> a_col_major, ArrayRef<f64> b_col_major, usize height,
+                       usize width, f64 dynamic_range = 1.0, Allocator* alloc = nullptr);
+
+// ============================================================================
+// Histograms & Thresholding
+// ============================================================================
+
+// Uniform histogram of `img` over `[min_val, max_val]` into `counts` (`counts.size()` bins).
+[[nodiscard]] ImageStatus histogram(ArrayRef<f64> img, f64 min_val, f64 max_val,
+                                    MutArrayRef<f64> counts) noexcept;
+
+// Single-level Otsu threshold on histogram `hist_counts`.
+[[nodiscard]] OtsuResult otsu_threshold(ArrayRef<f64> hist_counts, Allocator* alloc = nullptr);
 
 } // namespace keel::image
