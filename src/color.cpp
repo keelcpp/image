@@ -87,8 +87,8 @@ Color3 rgb_to_hsv(f64 r, f64 g, f64 b) noexcept {
 Color3 hsv_to_rgb(f64 h, f64 s, f64 v) noexcept {
     h = h - keel::floor(h);
     const f64 h6 = h * 6.0;
-    const i32 sector = static_cast<i32>(keel::floor(h6));
-    const f64 f = h6 - static_cast<f64>(sector);
+    const i32 sector = as<i32>(keel::floor(h6));
+    const f64 f = h6 - as<f64>(sector);
     const f64 p = v * (1.0 - s);
     const f64 q = v * (1.0 - s * f);
     const f64 t = v * (1.0 - s * (1.0 - f));
@@ -208,10 +208,10 @@ ImageStatus rgb_to_gray_u8_planar(ArrayRef<u8> r, ArrayRef<u8> g, ArrayRef<u8> b
         return ImageStatus::kInvalidArgument;
     }
     for (usize i = 0; i < n; ++i) {
-        const f64 y = kLumaR * static_cast<f64>(r[i]) + kLumaG * static_cast<f64>(g[i]) +
-                      kLumaB * static_cast<f64>(b[i]);
+        const f64 y = kLumaR * as<f64>(r[i]) + kLumaG * as<f64>(g[i]) +
+                      kLumaB * as<f64>(b[i]);
         const f64 clamped = keel::clamp(keel::round(y), 0.0, 255.0);
-        gray[i] = static_cast<u8>(clamped);
+        gray[i] = as<u8>(clamped);
     }
     return ImageStatus::kOk;
 }

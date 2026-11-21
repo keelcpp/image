@@ -109,7 +109,7 @@ void test_quality() {
     f64 im2[H * W]{};
     for (usize c = 0; c < W; ++c) {
         for (usize r = 0; r < H; ++r) {
-            const f64 v = static_cast<f64>(r + c) / static_cast<f64>(H + W - 2);
+            const f64 v = keel::as<f64>(r + c) / keel::as<f64>(H + W - 2);
             im1[c * H + r] = v;
             im2[c * H + r] = keel::clamp(v + 0.1 * ((r & 1u) ? 1.0 : -1.0), 0.0, 1.0);
         }

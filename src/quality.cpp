@@ -14,7 +14,7 @@ f64 mse(ArrayRef<f64> a, ArrayRef<f64> b) noexcept {
         const f64 d = a[i] - b[i];
         sum += d * d;
     }
-    return sum / static_cast<f64>(n);
+    return sum / as<f64>(n);
 }
 
 f64 mse_c64(ArrayRef<c64> a, ArrayRef<c64> b) noexcept {
@@ -25,7 +25,7 @@ f64 mse_c64(ArrayRef<c64> a, ArrayRef<c64> b) noexcept {
         const c64 d = a[i] - b[i];
         sum += d.real() * d.real() + d.imag() * d.imag();
     }
-    return sum / static_cast<f64>(n);
+    return sum / as<f64>(n);
 }
 
 f64 psnr(ArrayRef<f64> a, ArrayRef<f64> b, f64 peak) noexcept {
@@ -43,7 +43,7 @@ f64 mean2(ArrayRef<f64> img) noexcept {
     for (usize i = 0; i < n; ++i) {
         s += img[i];
     }
-    return s / static_cast<f64>(n);
+    return s / as<f64>(n);
 }
 
 f64 std2(ArrayRef<f64> img) noexcept {
@@ -56,7 +56,7 @@ f64 std2(ArrayRef<f64> img) noexcept {
         const f64 d = img[i] - mu;
         v += d * d;
     }
-    return keel::sqrt(v / static_cast<f64>(n - 1));
+    return keel::sqrt(v / as<f64>(n - 1));
 }
 
 ImageStatus gaussian_kernel_2d(usize height, usize width, f64 sigma,
@@ -69,14 +69,14 @@ ImageStatus gaussian_kernel_2d(usize height, usize width, f64 sigma,
         return ImageStatus::kInvalidArgument;
     }
 
-    const f64 cy = 0.5 * static_cast<f64>(height - 1);
-    const f64 cx = 0.5 * static_cast<f64>(width - 1);
+    const f64 cy = 0.5 * as<f64>(height - 1);
+    const f64 cx = 0.5 * as<f64>(width - 1);
     const f64 inv_2s2 = 1.0 / (2.0 * sigma * sigma);
     f64 sum = 0.0;
     for (usize c = 0; c < width; ++c) {
-        const f64 dx = static_cast<f64>(c) - cx;
+        const f64 dx = as<f64>(c) - cx;
         for (usize r = 0; r < height; ++r) {
-            const f64 dy = static_cast<f64>(r) - cy;
+            const f64 dy = as<f64>(r) - cy;
             const f64 v = keel::exp(-(dx * dx + dy * dy) * inv_2s2);
             out_col_major[c * height + r] = v;
             sum += v;
@@ -106,26 +106,26 @@ ImageStatus correlate_2d_replicate(ArrayRef<f64> img_col_major, usize height, us
         return ImageStatus::kInvalidArgument;
     }
 
-    const i64 h_i = static_cast<i64>(height);
-    const i64 w_i = static_cast<i64>(width);
-    const i64 cy = static_cast<i64>(kh / 2);
-    const i64 cx = static_cast<i64>(kw / 2);
+    const i64 h_i = as<i64>(height);
+    const i64 w_i = as<i64>(width);
+    const i64 cy = as<i64>(kh / 2);
+    const i64 cx = as<i64>(kw / 2);
 
     for (usize c = 0; c < width; ++c) {
         for (usize r = 0; r < height; ++r) {
             f64 acc = 0.0;
             for (usize kc = 0; kc < kw; ++kc) {
-                i64 sc = static_cast<i64>(c) + static_cast<i64>(kc) - cx;
+                i64 sc = as<i64>(c) + as<i64>(kc) - cx;
                 if (sc < 0) sc = 0;
                 else if (sc >= w_i) sc = w_i - 1;
-                const usize sc_u = static_cast<usize>(sc);
+                const usize sc_u = as<usize>(sc);
                 const usize k_col_off = kc * kh;
                 const usize s_col_off = sc_u * height;
                 for (usize kr = 0; kr < kh; ++kr) {
-                    i64 sr = static_cast<i64>(r) + static_cast<i64>(kr) - cy;
+                    i64 sr = as<i64>(r) + as<i64>(kr) - cy;
                     if (sr < 0) sr = 0;
                     else if (sr >= h_i) sr = h_i - 1;
-                    acc += img_col_major[s_col_off + static_cast<usize>(sr)] *
+                    acc += img_col_major[s_col_off + as<usize>(sr)] *
                            kernel_col_major[k_col_off + kr];
                 }
             }
@@ -192,7 +192,7 @@ f64 ssim(ArrayRef<f64> a_col_major, ArrayRef<f64> b_col_major, usize height, usi
             ++cnt;
         }
     }
-    return (cnt > 0) ? (sum / static_cast<f64>(cnt)) : 1.0;
+    return (cnt > 0) ? (sum / as<f64>(cnt)) : 1.0;
 }
 
 } // namespace keel::image
