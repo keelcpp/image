@@ -1,5 +1,6 @@
 #pragma once
 
+#include "keel/array.h"
 #include "keel/complex.h"
 #include "keel/core.h"
 #include "keel/memory.h"
@@ -132,5 +133,121 @@ struct OtsuResult {
 
 // Single-level Otsu threshold on histogram `hist_counts`.
 [[nodiscard]] OtsuResult otsu_threshold(ArrayRef<f64> hist_counts, Allocator* alloc = nullptr);
+
+// ============================================================================
+// Bayer Demosaicing (Malvar-He-Cutler 5x5)
+// ============================================================================
+
+enum class BayerPattern : u8 {
+    kRggb = 0,
+    kBggr,
+    kGrbg,
+    kGbrg,
+};
+
+// Demosaic an even-sized `height x width` column-major Bayer mosaic into planar R/G/B,
+// clamping outputs to `[0, max_val]` (pass `max_val <= 0` to disable upper clamping).
+[[nodiscard]] ImageStatus demosaic_mhc(ArrayRef<f64> mosaic_col_major, usize height, usize width,
+                                       BayerPattern pattern, f64 max_val, MutArrayRef<f64> out_r,
+                                       MutArrayRef<f64> out_g, MutArrayRef<f64> out_b) noexcept;
+
+// ============================================================================
+// Texture Analysis (GLCM)
+// ============================================================================
+
+struct GlcmProps {
+    f64 contrast = 0.0;
+    f64 correlation = 0.0;
+    f64 energy = 0.0;
+    f64 homogeneity = 0.0;
+};
+
+// Gray-level co-occurrence matrix (`num_levels x num_levels` column-major).
+[[nodiscard]] ImageStatus graycomatrix(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       i32 num_levels, i32 off_r, i32 off_c, f64 g_low, f64 g_high,
+                                       bool symmetric, MutArrayRef<f64> out_glcm_col_major,
+                                       Allocator* alloc = nullptr);
+
+// Haralick summary statistics on a square `num_levels x num_levels` GLCM.
+[[nodiscard]] ImageStatus graycoprops(ArrayRef<f64> glcm_col_major, usize num_levels,
+                                      GlcmProps& out) noexcept;
+
+// ============================================================================
+// Chromatic Adaptation (Bradford / Von Kries / Simple)
+// ============================================================================
+
+enum class ChromAdaptMethod : u8 {
+    kBradford = 0,
+    kVonKries,
+    kSimple,
+};
+
+enum class RgbColorSpace : u8 {
+    kSrgb = 0,
+    kAdobeRgb1998,
+    kProPhotoRgb,
+    kLinearRgb,
+};
+
+// White-balance chromatic adaptation on planar [0, 1] encoded RGB channels.
+[[nodiscard]] ImageStatus chromadapt_planar(ArrayRef<f64> in_r, ArrayRef<f64> in_g,
+                                            ArrayRef<f64> in_b, Color3 illuminant_rgb01,
+                                            ChromAdaptMethod method, RgbColorSpace color_space,
+                                            MutArrayRef<f64> out_r, MutArrayRef<f64> out_g,
+                                            MutArrayRef<f64> out_b) noexcept;
+
+// ============================================================================
+// 3D Filter Kernels & 2D Windowed FIR Design
+// ============================================================================
+
+enum class Axis3D : u8 {
+    kX = 0,
+    kY,
+    kZ,
+};
+
+[[nodiscard]] ImageStatus fspecial3_average(usize h, usize w, usize p,
+                                            MutArrayRef<f64> out_col_major) noexcept;
+[[nodiscard]] ImageStatus fspecial3_gaussian(usize h, usize w, usize p, f64 sr, f64 sc, f64 sp,
+                                             MutArrayRef<f64> out_col_major) noexcept;
+[[nodiscard]] ImageStatus fspecial3_ellipsoid(f64 ar, f64 ac, f64 ap, Array<f64>& out_col_major,
+                                              usize& out_h, usize& out_w, usize& out_p,
+                                              Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial3_laplacian(f64 gamma1, f64 gamma2,
+                                              MutArrayRef<f64> out_col_major_3x3x3) noexcept;
+[[nodiscard]] ImageStatus fspecial3_log(usize h, usize w, usize p, f64 sr, f64 sc, f64 sp,
+                                        MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial3_gradient(bool sobel, Axis3D axis,
+                                             MutArrayRef<f64> out_col_major_3x3x3) noexcept;
+[[nodiscard]] ImageStatus fwind2(ArrayRef<f64> hd_col_major, ArrayRef<f64> win_col_major,
+                                 usize height, usize width,
+                                 MutArrayRef<f64> out_col_major) noexcept;
+
+// ============================================================================
+// Multiscale Frangi Vesselness (fibermetric) & Local Laplacian Filtering
+// ============================================================================
+
+[[nodiscard]] ImageStatus fibermetric_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                         ArrayRef<f64> thickness, f64 sensitivity, bool bright,
+                                         MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fibermetric_3d(ArrayRef<f64> vol_col_major, usize height, usize width,
+                                         usize depth, ArrayRef<f64> thickness, f64 sensitivity,
+                                         bool bright, MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// Fast Local Laplacian filter (Aubry-Paris-Hasinoff-Kautz-Durand 2014).
+// Pass `num_intensity_levels <= 0` for automatic level selection from `alpha`.
+[[nodiscard]] ImageStatus local_laplacian_gray(ArrayRef<f32> in_col_major, usize height,
+                                               usize width, f32 sigma, f32 alpha, f32 beta,
+                                               i32 num_intensity_levels,
+                                               MutArrayRef<f32> out_col_major,
+                                               Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus local_laplacian_rgb(ArrayRef<f32> in_r, ArrayRef<f32> in_g,
+                                              ArrayRef<f32> in_b, usize height, usize width,
+                                              f32 sigma, f32 alpha, f32 beta,
+                                              i32 num_intensity_levels, bool process_luminance,
+                                              MutArrayRef<f32> out_r, MutArrayRef<f32> out_g,
+                                              MutArrayRef<f32> out_b, Allocator* alloc = nullptr);
 
 } // namespace keel::image

@@ -8,6 +8,7 @@ namespace {
 
 using namespace keel;
 namespace img = keel::image;
+namespace im = keel::image;
 
 i32 g_failures = 0;
 
@@ -139,12 +140,113 @@ void test_threshold() {
     CHECK_NEAR(h[2], 2.0, 1e-15);
 }
 
+void test_demosaic_and_texture() {
+    // Constant Bayer mosaic of value 100 -> constant RGB (100, 100, 100)
+    f64 mosaic[6 * 6]{};
+    for (usize i = 0; i < 36; ++i) mosaic[i] = 100.0;
+    f64 r[36]{}, g[36]{}, b[36]{};
+    CHECK(im::demosaic_mhc(mosaic, 6, 6, im::BayerPattern::kRggb, 255.0, r, g, b) ==
+          im::ImageStatus::kOk);
+    for (usize i = 0; i < 36; ++i) {
+        CHECK_NEAR(r[i], 100.0, 1e-12);
+        CHECK_NEAR(g[i], 100.0, 1e-12);
+        CHECK_NEAR(b[i], 100.0, 1e-12);
+    }
+
+    // GLCM & Haralick properties on a 4x4 checkerboard
+    f64 chk[16]{};
+    for (usize c = 0; c < 4; ++c)
+        for (usize r_i = 0; r_i < 4; ++r_i)
+            chk[r_i + c * 4] = ((r_i + c) % 2 == 0) ? 0.0 : 1.0;
+    f64 glcm[4]{};
+    CHECK(im::graycomatrix(chk, 4, 4, 2, 0, 1, 0.0, 1.0, true, glcm) == im::ImageStatus::kOk);
+    CHECK_NEAR(glcm[0], 0.0, 1e-12);
+    CHECK_NEAR(glcm[1], 12.0, 1e-12);
+    CHECK_NEAR(glcm[2], 12.0, 1e-12);
+    CHECK_NEAR(glcm[3], 0.0, 1e-12);
+
+    im::GlcmProps props;
+    CHECK(im::graycoprops(glcm, 2, props) == im::ImageStatus::kOk);
+    CHECK_NEAR(props.contrast, 1.0, 1e-12);
+    CHECK_NEAR(props.correlation, -1.0, 1e-12);
+    CHECK_NEAR(props.energy, 0.5, 1e-12);
+    CHECK_NEAR(props.homogeneity, 0.5, 1e-12);
+}
+
+void test_chromadapt_and_filters() {
+    // Chromatic adaptation with white illuminant [1,1,1] is identity in sRGB
+    const f64 in_r[2] = {0.2, 0.8};
+    const f64 in_g[2] = {0.4, 0.6};
+    const f64 in_b[2] = {0.7, 0.3};
+    f64 out_r[2]{}, out_g[2]{}, out_b[2]{};
+    CHECK(im::chromadapt_planar(in_r, in_g, in_b, {1.0, 1.0, 1.0}, im::ChromAdaptMethod::kBradford,
+                                im::RgbColorSpace::kSrgb, out_r, out_g, out_b) ==
+          im::ImageStatus::kOk);
+    for (usize i = 0; i < 2; ++i) {
+        CHECK_NEAR(out_r[i], in_r[i], 1e-6);
+        CHECK_NEAR(out_g[i], in_g[i], 1e-6);
+        CHECK_NEAR(out_b[i], in_b[i], 1e-6);
+    }
+
+    // 3D filter kernels: Gaussian sums to 1, Laplacian & LoG sum to 0
+    f64 g3[27]{}, l3[27]{}, log3[27]{}, s3[27]{};
+    CHECK(im::fspecial3_gaussian(3, 3, 3, 1.0, 1.0, 1.0, g3) == im::ImageStatus::kOk);
+    CHECK(im::fspecial3_laplacian(0.2, 0.1, l3) == im::ImageStatus::kOk);
+    CHECK(im::fspecial3_log(3, 3, 3, 1.0, 1.0, 1.0, log3) == im::ImageStatus::kOk);
+    CHECK(im::fspecial3_gradient(true, im::Axis3D::kX, s3) == im::ImageStatus::kOk);
+    f64 sg = 0.0, sl = 0.0, slog = 0.0;
+    for (usize i = 0; i < 27; ++i) {
+        sg += g3[i];
+        sl += l3[i];
+        slog += log3[i];
+    }
+    CHECK_NEAR(sg, 1.0, 1e-12);
+    CHECK_NEAR(sl, 0.0, 1e-12);
+    CHECK_NEAR(slog, 0.0, 1e-12);
+
+    keel::Array<f64> ell;
+    usize eh = 0, ew = 0, ep = 0;
+    CHECK(im::fspecial3_ellipsoid(2.0, 2.0, 2.0, ell, eh, ew, ep) == im::ImageStatus::kOk);
+    CHECK(eh == 5 && ew == 5 && ep == 5);
+
+    // fwind2 unit DC gain
+    f64 hd[9]{}, win[9]{}, h2[9]{};
+    for (usize i = 0; i < 9; ++i) {
+        hd[i] = 1.0;
+        win[i] = 1.0;
+    }
+    CHECK(im::fwind2(hd, win, 3, 3, h2) == im::ImageStatus::kOk);
+    f64 sh2 = 0.0;
+    for (usize i = 0; i < 9; ++i) sh2 += h2[i];
+    CHECK_NEAR(sh2, 1.0, 1e-12);
+
+    // Fibermetric 2D detects a bright vertical line in the middle
+    f64 line_img[16 * 16]{};
+    for (usize r = 0; r < 16; ++r) line_img[r + 8 * 16] = 1.0;
+    const f64 thick[1] = {4.0};
+    f64 vessel[16 * 16]{};
+    CHECK(im::fibermetric_2d(line_img, 16, 16, thick, 0.01, true, vessel) == im::ImageStatus::kOk);
+    CHECK(vessel[8 + 8 * 16] > 0.5);
+    CHECK(vessel[8 + 0 * 16] < 0.05);
+
+    // Local Laplacian filter: identity (alpha=1, beta=1) and detail-preserving on ramp
+    f32 ramp[16 * 16]{}, llf_out[16 * 16]{};
+    for (usize c = 0; c < 16; ++c)
+        for (usize r = 0; r < 16; ++r)
+            ramp[r + c * 16] = keel::as<f32>(c) / 15.0f;
+    CHECK(im::local_laplacian_gray(ramp, 16, 16, 0.2f, 0.5f, 1.0f, 8, llf_out) ==
+          im::ImageStatus::kOk);
+    CHECK(llf_out[8 + 15 * 16] > llf_out[8 + 0 * 16]);
+}
+
 } // namespace
 
 int main() {
     test_color();
     test_quality();
     test_threshold();
+    test_demosaic_and_texture();
+    test_chromadapt_and_filters();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");
