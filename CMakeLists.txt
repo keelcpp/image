@@ -23,6 +23,26 @@ if(NOT TARGET keel::keel)
     FetchContent_MakeAvailable(keel)
 endif()
 
+if(NOT TARGET keel::fft)
+    find_package(keel_fft QUIET CONFIG)
+endif()
+if(NOT TARGET keel::fft)
+    include(FetchContent)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../fft/CMakeLists.txt" AND NOT DEFINED FETCHCONTENT_SOURCE_DIR_KEEL_FFT)
+        set(FETCHCONTENT_SOURCE_DIR_KEEL_FFT "${CMAKE_CURRENT_SOURCE_DIR}/../fft" CACHE PATH "Local keel_fft checkout")
+    endif()
+    set(KEEL_FFT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    if(KEEL_IMAGE_NO_EXCEPTIONS_RTTI)
+        set(KEEL_FFT_NO_EXCEPTIONS_RTTI ON CACHE BOOL "" FORCE)
+    endif()
+    FetchContent_Declare(
+        keel_fft
+        GIT_REPOSITORY https://github.com/keelcpp/fft.git
+        GIT_TAG        740bed99088ffb27d58fa2aa8e70b9d66f59100f
+    )
+    FetchContent_MakeAvailable(keel_fft)
+endif()
+
 add_library(keel_image STATIC
     src/color.cpp
     src/quality.cpp
@@ -33,10 +53,17 @@ add_library(keel_image STATIC
     src/filter_design.cpp
     src/fibermetric.cpp
     src/locallapfilt.cpp
+    src/illum.cpp
+    src/geom.cpp
+    src/fir2d.cpp
+    src/dehaze.cpp
 )
 add_library(keel::image ALIAS keel_image)
 
-target_link_libraries(keel_image PUBLIC keel::keel)
+target_link_libraries(keel_image
+    PUBLIC keel::keel
+    PRIVATE keel::fft
+)
 
 target_compile_features(keel_image PUBLIC cxx_std_20)
 set_target_properties(keel_image PROPERTIES

@@ -239,6 +239,124 @@ void test_chromadapt_and_filters() {
     CHECK(llf_out[8 + 15 * 16] > llf_out[8 + 0 * 16]);
 }
 
+void test_illum_geom_fir2d_dehaze() {
+    // 1. illumwhite / illumgray / illumpca / delta_e_94 / delta_e_2000
+    const f64 r[4] = {0.2, 0.4, 0.6, 0.8};
+    const f64 g[4] = {0.1, 0.2, 0.3, 0.4};
+    const f64 b[4] = {0.05, 0.1, 0.15, 0.2};
+    im::Color3 iw{}, ig{}, ip{};
+    CHECK(im::illumwhite_planar(r, g, b, {}, 0.0, iw) == im::ImageStatus::kOk);
+    CHECK_NEAR(iw.c0, 0.8, 1e-12);
+    CHECK_NEAR(iw.c1, 0.4, 1e-12);
+    CHECK_NEAR(iw.c2, 0.2, 1e-12);
+
+    CHECK(im::illumgray_planar(r, g, b, {}, 0.0, 0.0, 1.0, ig) == im::ImageStatus::kOk);
+    CHECK_NEAR(ig.c0, 0.5, 1e-12);
+    CHECK_NEAR(ig.c1, 0.25, 1e-12);
+    CHECK_NEAR(ig.c2, 0.125, 1e-12);
+
+    CHECK(im::illumpca_planar(r, g, b, {}, 50.0, ip) == im::ImageStatus::kOk);
+    // Direction should be proportional to (4, 2, 1) / sqrt(21).
+    CHECK_NEAR(ip.c0 / ip.c2, 4.0, 1e-6);
+    CHECK_NEAR(ip.c1 / ip.c2, 2.0, 1e-6);
+
+    const im::Color3 lab1{50.0, 2.6772, -79.7751};
+    const im::Color3 lab2{50.0, 0.0, -82.7485};
+    CHECK_NEAR(im::delta_e_94(lab1, lab1), 0.0, 1e-12);
+    CHECK_NEAR(im::delta_e_2000(lab1, lab1), 0.0, 1e-12);
+    // Sharma-Wu-Dalal (2005) pair 1 reference value ~2.0425.
+    CHECK_NEAR(im::delta_e_2000(lab1, lab2), 2.0425, 1e-3);
+
+    // 2. resize_2d / resize_3d / rotate_2d / translate_2d / pyramid_reduce/expand
+    f64 img4[4 * 4]{};
+    for (usize i = 0; i < 16; ++i) img4[i] = 3.5;
+    f64 res8[8 * 8]{};
+    CHECK(im::resize_2d(img4, 4, 4, 1, 8, 8, 2.0, 2.0, im::ResizeKernel::kCubic, true, res8) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(res8[0], 3.5, 1e-12);
+    CHECK_NEAR(res8[63], 3.5, 1e-12);
+
+    f64 vol2[2 * 2 * 2]{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+    f64 vol4[4 * 4 * 4]{};
+    CHECK(im::resize_3d(vol2, 2, 2, 2, 4, 4, 4, 2.0, 2.0, 2.0, im::ResizeKernel::kLanczos2, true,
+                        vol4) == im::ImageStatus::kOk);
+    CHECK_NEAR(vol4[0], 1.0, 1e-12);
+
+    usize rh = 0, rw = 0;
+    im::rotate_2d_dims(3, 5, 90.0, false, rh, rw);
+    CHECK(rh == 5 && rw == 3);
+    f64 rect[3 * 5]{};
+    for (usize i = 0; i < 15; ++i) rect[i] = keel::as<f64>(i + 1);
+    f64 rot90[5 * 3]{};
+    CHECK(im::rotate_2d(rect, 3, 5, 1, 90.0, true, false, rot90, rh, rw) == im::ImageStatus::kOk);
+    CHECK_NEAR(rot90[0], rect[4 * 3 + 0], 1e-12);
+
+    f64 tr_out[4 * 4]{};
+    CHECK(im::translate_2d(img4, 4, 4, 1, 0.0, 0.0, tr_out) == im::ImageStatus::kOk);
+    CHECK_NEAR(tr_out[5], 3.5, 1e-12);
+
+    f64 pyr_r[2 * 2]{}, pyr_e[7 * 7]{};
+    CHECK(im::pyramid_reduce_2d(img4, 4, 4, 1, pyr_r) == im::ImageStatus::kOk);
+    CHECK_NEAR(pyr_r[0], 3.5, 1e-12);
+    CHECK(im::pyramid_expand_2d(img4, 4, 4, 1, pyr_e) == im::ImageStatus::kOk);
+    CHECK(pyr_e[3 * 7 + 3] > 3.0);
+
+    // 3. fsamp2 / ftrans2 / fwind1 / fwind2_real
+    f64 hd5[25]{}, h5[25]{};
+    for (usize i = 0; i < 25; ++i) hd5[i] = 1.0;
+    CHECK(im::fsamp2_real(hd5, 5, 5, h5) == im::ImageStatus::kOk);
+    CHECK_NEAR(h5[2 * 5 + 2], 1.0, 1e-12);
+    CHECK_NEAR(h5[0], 0.0, 1e-12);
+
+    const f64 b1d[3] = {0.25, 0.5, 0.25};
+    keel::Array<f64> ft;
+    usize fth = 0, ftw = 0;
+    CHECK(im::ftrans2(b1d, {}, 0, 0, ft, fth, ftw) == im::ImageStatus::kOk);
+    CHECK(fth == 3 && ftw == 3);
+    f64 ft_sum = 0.0;
+    for (usize i = 0; i < 9; ++i) ft_sum += ft[i];
+    CHECK_NEAR(ft_sum, 1.0, 1e-12);
+
+    const f64 win5[5] = {0.5, 0.8, 1.0, 0.8, 0.5};
+    f64 fw1[25]{};
+    CHECK(im::fwind1_real(hd5, 5, 5, win5, {}, fw1) == im::ImageStatus::kOk);
+    CHECK_NEAR(fw1[2 * 5 + 2], 1.0, 1e-12);
+
+    f64 fw2[25]{};
+    CHECK(im::fwind2_real(hd5, 5, 5, win5, 1, 5, fw2) == im::ImageStatus::kOk);
+    CHECK_NEAR(fw2[2 * 5 + 2], 1.0, 1e-12);
+
+    // 4. box_filter_2d_replicate / guided_filter_gray / dehaze
+    f64 box_in[16]{}, box_out[16]{}, gf_out[16]{};
+    for (usize i = 0; i < 16; ++i) box_in[i] = 0.6;
+    CHECK(im::box_filter_2d_replicate(box_in, 4, 4, 3, box_out) == im::ImageStatus::kOk);
+    CHECK_NEAR(box_out[5], 0.6, 1e-12);
+    CHECK(im::guided_filter_gray(box_in, {}, 4, 4, 3, 0.01, gf_out) == im::ImageStatus::kOk);
+    CHECK_NEAR(gf_out[5], 0.6, 1e-12);
+
+    keel::Array<f32> hazy(16 * 16 * 3, 0.0f);
+    for (usize c = 0; c < 3; ++c) {
+        for (usize i = 0; i < 256; ++i) {
+            // Simulated haze: scene in [0.1, 0.6] blended with atmospheric light 0.9.
+            const f32 scene = 0.1f + 0.5f * keel::as<f32>(i % 16) / 15.0f;
+            hazy[c * 256 + i] = 0.5f * scene + 0.5f * 0.9f;
+        }
+    }
+    keel::Array<f32> dehazed(16 * 16 * 3, 0.0f);
+    keel::Array<f64> thick(256, 0.0);
+    f64 atm_est[3]{};
+    CHECK(im::dehaze(hazy.as_ref(), 16, 16, 3, 0.9, im::DehazeMethod::kSimpleDcp, {},
+                     im::DehazeContrast::kNone, 0.0, dehazed.as_mut_ref(), thick.as_mut_ref(),
+                     atm_est) == im::ImageStatus::kOk);
+    CHECK(atm_est[0] > 0.7 && atm_est[0] <= 1.0);
+    CHECK(dehazed[0] < hazy[0]); // haze reduced at darkest pixel
+
+    CHECK(im::dehaze(hazy.as_ref(), 16, 16, 3, 0.9, im::DehazeMethod::kApproxDcp, {},
+                     im::DehazeContrast::kGlobal, 0.0, dehazed.as_mut_ref(), thick.as_mut_ref(),
+                     atm_est) == im::ImageStatus::kOk);
+    CHECK(atm_est[0] > 0.7 && atm_est[0] <= 1.0);
+}
+
 } // namespace
 
 int main() {
@@ -247,6 +365,7 @@ int main() {
     test_threshold();
     test_demosaic_and_texture();
     test_chromadapt_and_filters();
+    test_illum_geom_fir2d_dehaze();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");

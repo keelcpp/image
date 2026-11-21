@@ -250,4 +250,155 @@ enum class Axis3D : u8 {
                                               MutArrayRef<f32> out_r, MutArrayRef<f32> out_g,
                                               MutArrayRef<f32> out_b, Allocator* alloc = nullptr);
 
+// ============================================================================
+// Illumination Estimation & Perceptual Color Difference (CIE94 / CIEDE2000)
+// ============================================================================
+
+enum class ColorDiffStandard : u8 {
+    kCie94 = 0,
+    kCiede2000,
+};
+
+// White-patch top-percentile illuminant estimator (`mask` empty => all pixels selected).
+[[nodiscard]] ImageStatus illumwhite_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                            ArrayRef<u8> mask, f64 percentile, Color3& out,
+                                            Allocator* alloc = nullptr);
+
+// Grey-world trimmed Minkowski-norm illuminant estimator (`mask` empty => all pixels selected).
+[[nodiscard]] ImageStatus illumgray_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                           ArrayRef<u8> mask, f64 p_lo, f64 p_hi, f64 norm_exp,
+                                           Color3& out, Allocator* alloc = nullptr);
+
+// Cheng-Prasad-Brown (2014) PCA illuminant estimator (`mask` empty => all pixels selected).
+[[nodiscard]] ImageStatus illumpca_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                          ArrayRef<u8> mask, f64 percentage, Color3& out,
+                                          Allocator* alloc = nullptr);
+
+[[nodiscard]] f64 delta_e_94(Color3 lab1, Color3 lab2, f64 kL = 1.0, f64 kC = 1.0, f64 kH = 1.0,
+                             f64 K1 = 0.045, f64 K2 = 0.015) noexcept;
+
+[[nodiscard]] f64 delta_e_2000(Color3 lab1, Color3 lab2, f64 kL = 1.0, f64 kC = 1.0, f64 kH = 1.0,
+                               f64 K1 = 0.045, f64 K2 = 0.015) noexcept;
+
+[[nodiscard]] ImageStatus colordiff_lab_planar(ArrayRef<f64> l1, ArrayRef<f64> a1, ArrayRef<f64> b1,
+                                               ArrayRef<f64> l2, ArrayRef<f64> a2, ArrayRef<f64> b2,
+                                               ColorDiffStandard standard, f64 kL, f64 kC, f64 kH,
+                                               f64 K1, f64 K2, MutArrayRef<f64> out) noexcept;
+
+// ============================================================================
+// Geometric Resampling, Rotation, Translation & Burt-Adelson Pyramids
+// ============================================================================
+
+enum class ResizeKernel : u8 {
+    kNearest = 0,
+    kBox,
+    kTriangle,
+    kCubic,
+    kLanczos2,
+    kLanczos3,
+};
+
+// Column-major `in_h x in_w x channels` -> `out_h x out_w x channels`.
+[[nodiscard]] ImageStatus resize_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w,
+                                    usize channels, usize out_h, usize out_w, f64 scale_y,
+                                    f64 scale_x, ResizeKernel kernel, bool antialias,
+                                    MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// Column-major `in_r x in_c x in_d` -> `out_r x out_c x out_d`.
+[[nodiscard]] ImageStatus resize_3d(ArrayRef<f64> in_col_major, usize in_r, usize in_c, usize in_d,
+                                    usize out_r, usize out_c, usize out_d, f64 scale_y, f64 scale_x,
+                                    f64 scale_z, ResizeKernel kernel, bool antialias,
+                                    MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+void rotate_2d_dims(usize in_h, usize in_w, f64 angle_deg, bool crop, usize& out_h,
+                    usize& out_w) noexcept;
+
+[[nodiscard]] ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w,
+                                    usize channels, f64 angle_deg, bool nearest, bool crop,
+                                    MutArrayRef<f64> out_col_major, usize out_h,
+                                    usize out_w) noexcept;
+
+[[nodiscard]] ImageStatus translate_2d(ArrayRef<f64> in_col_major, usize h, usize w, usize channels,
+                                       f64 dx, f64 dy, MutArrayRef<f64> out_col_major) noexcept;
+
+[[nodiscard]] ImageStatus pyramid_reduce_2d(ArrayRef<f64> in_col_major, usize h, usize w,
+                                            usize channels, MutArrayRef<f64> out_col_major,
+                                            Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus pyramid_expand_2d(ArrayRef<f64> in_col_major, usize h, usize w,
+                                            usize channels, MutArrayRef<f64> out_col_major,
+                                            Allocator* alloc = nullptr);
+
+// ============================================================================
+// 2D FIR Filter Design (fsamp2 / ftrans2 / fwind1 / fwind2)
+// ============================================================================
+
+[[nodiscard]] ImageStatus fsamp2_real(ArrayRef<f64> hd_col_major, usize h, usize w,
+                                      MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus fsamp2_complex(ArrayRef<c64> hd_col_major, usize h, usize w,
+                                         MutArrayRef<c64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// Pass empty `t_col_major` (mt = nt = 0) for the default 3x3 McClellan transformation.
+[[nodiscard]] ImageStatus ftrans2(ArrayRef<f64> b, ArrayRef<f64> t_col_major, usize mt, usize nt,
+                                  Array<f64>& out_col_major, usize& out_h, usize& out_w,
+                                  Allocator* alloc = nullptr);
+
+// Pass empty `win2` for Huang's radial 1-window method; non-empty `win2` for separable `win2 * win1^T`.
+[[nodiscard]] ImageStatus fwind1_real(ArrayRef<f64> hd_col_major, usize hh, usize wh,
+                                      ArrayRef<f64> win1, ArrayRef<f64> win2,
+                                      MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus fwind1_complex(ArrayRef<c64> hd_col_major, usize hh, usize wh,
+                                         ArrayRef<c64> win1, ArrayRef<c64> win2,
+                                         MutArrayRef<c64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus fwind2_real(ArrayRef<f64> hd_col_major, usize hh, usize wh,
+                                      ArrayRef<f64> win_col_major, usize hw, usize ww,
+                                      MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus fwind2_complex(ArrayRef<c64> hd_col_major, usize hh, usize wh,
+                                         ArrayRef<c64> win_col_major, usize hw, usize ww,
+                                         MutArrayRef<c64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// ============================================================================
+// Box Filter, Guided Image Filter & Dark-Channel Prior Dehazing
+// ============================================================================
+
+[[nodiscard]] ImageStatus box_filter_2d_replicate(ArrayRef<f64> in_col_major, usize height,
+                                                  usize width, i32 filter_size,
+                                                  MutArrayRef<f64> out_col_major,
+                                                  Allocator* alloc = nullptr);
+
+[[nodiscard]] ImageStatus guided_filter_gray(ArrayRef<f64> img_col_major,
+                                             ArrayRef<f64> guide_col_major, usize height,
+                                             usize width, i32 nhood, f64 eps,
+                                             MutArrayRef<f64> out_col_major,
+                                             Allocator* alloc = nullptr);
+
+enum class DehazeMethod : u8 {
+    kSimpleDcp = 0,
+    kApproxDcp,
+};
+
+enum class DehazeContrast : u8 {
+    kGlobal = 0,
+    kBoost,
+    kNone,
+};
+
+// Dark-channel prior dehazing on planar [0, 1] `height x width x channels` (channels = 1 or 3).
+// Pass empty `atm_override` to estimate atmospheric light automatically.
+// `out_thickness_col_major` has length `height * width` (may be empty if unused).
+// `out_atm` has length `channels` (may be empty if unused).
+[[nodiscard]] ImageStatus dehaze(ArrayRef<f32> in_planar_col_major, usize height, usize width,
+                                 usize channels, f64 amount, DehazeMethod method,
+                                 ArrayRef<f32> atm_override, DehazeContrast contrast,
+                                 f64 boost_amount, MutArrayRef<f32> out_planar_col_major,
+                                 MutArrayRef<f64> out_thickness_col_major, MutArrayRef<f64> out_atm,
+                                 Allocator* alloc = nullptr);
+
 } // namespace keel::image
