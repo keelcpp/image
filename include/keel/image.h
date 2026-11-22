@@ -625,4 +625,156 @@ struct BoundaryPoint {
                                              i32 conn, usize max_points, bool clockwise,
                                              Array<BoundaryPoint>& out_points);
 
+// ============================================================================
+// Spatial, Statistical, 3D & Denoising Filters
+// ============================================================================
+
+enum class PadMode : u8 {
+    kConstant = 0,
+    kReplicate,
+    kSymmetric,
+    kCircular,
+};
+
+struct Kernel2D {
+    usize rows = 0;
+    usize cols = 0;
+    Array<f64> data_col_major;
+};
+
+// Pad a 2D/3D column-major array (`height x width x pages`).
+[[nodiscard]] ImageStatus padarray_f64(ArrayRef<f64> src_col_major, usize height, usize width,
+                                       usize pages, i32 pre_r, i32 post_r, i32 pre_c, i32 post_c,
+                                       i32 pre_p, i32 post_p, PadMode mode, f64 pad_value,
+                                       MutArrayRef<f64> out_col_major) noexcept;
+
+// Standard 2D filter kernel factories (`fspecial`).
+[[nodiscard]] ImageStatus fspecial_average(i32 rows, i32 cols, Kernel2D& out,
+                                           Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_gaussian(i32 rows, i32 cols, f64 sigma, Kernel2D& out,
+                                            Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_laplacian(f64 alpha, Kernel2D& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_log(i32 rows, i32 cols, f64 sigma, Kernel2D& out,
+                                       Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_sobel(Kernel2D& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_prewitt(Kernel2D& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_disk(f64 radius, Kernel2D& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_motion(f64 length, f64 theta_deg, Kernel2D& out,
+                                          Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus fspecial_unsharp(f64 alpha, Kernel2D& out, Allocator* alloc = nullptr);
+
+// 2D correlation (`flip_kernel == false`) or convolution (`flip_kernel == true`).
+// Output size is `(height + k_h - 1) x (width + k_w - 1)` when `full == true`, else `height x width`.
+[[nodiscard]] ImageStatus imfilter_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                      ArrayRef<f64> kernel_col_major, usize k_h, usize k_w,
+                                      PadMode boundary, f64 pad_value, bool full, bool flip_kernel,
+                                      MutArrayRef<f64> out_col_major) noexcept;
+
+// Replicate-padded 2D box filter on uint8 using integer summed-area table fast path.
+[[nodiscard]] ImageStatus box_filter_2d_u8_replicate(ArrayRef<u8> in_col_major, usize height,
+                                                     usize width, i32 filter_size,
+                                                     MutArrayRef<u8> out_col_major,
+                                                     Allocator* alloc = nullptr);
+
+// 2D / 3D box filter on precomputed integral images `(h1 x w1 [x pages])` or `(h1 x w1 x d1)`.
+[[nodiscard]] ImageStatus integral_box_filter_2d(ArrayRef<f64> sat_col_major, usize h1, usize w1,
+                                                 usize pages, i32 fh, i32 fw, f64 norm_factor,
+                                                 MutArrayRef<f64> out_col_major) noexcept;
+[[nodiscard]] ImageStatus integral_box_filter_3d(ArrayRef<f64> sat_col_major, usize h1, usize w1,
+                                                 usize d1, i32 fh, i32 fw, i32 fp, f64 norm_factor,
+                                                 MutArrayRef<f64> out_col_major) noexcept;
+
+// 2D / 3D mode filter (`fd == 0` => 2D; `pad_mode` in {kSymmetric, kReplicate, kConstant}).
+[[nodiscard]] ImageStatus modefilt_u8(ArrayRef<u8> src_col_major, usize height, usize width,
+                                      usize pages, i32 fh, i32 fw, i32 fd, PadMode pad_mode,
+                                      MutArrayRef<u8> out_col_major) noexcept;
+[[nodiscard]] ImageStatus modefilt_f64(ArrayRef<f64> src_col_major, usize height, usize width,
+                                       usize pages, i32 fh, i32 fw, i32 fd, PadMode pad_mode,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D median filter (zero-padded borders; Huang O(W) sliding histogram for odd u8, med9 for 3x3 f64).
+[[nodiscard]] ImageStatus medfilt2_u8(ArrayRef<u8> src_col_major, usize height, usize width,
+                                      i32 rows, i32 cols, MutArrayRef<u8> out_col_major,
+                                      Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus medfilt2_f64(ArrayRef<f64> src_col_major, usize height, usize width,
+                                       i32 rows, i32 cols, MutArrayRef<f64> out_col_major,
+                                       Allocator* alloc = nullptr);
+
+// Unsharp masking (`I + amount * mask * (I - gauss(I, radius))`).
+[[nodiscard]] ImageStatus imsharpen_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       f64 radius, f64 amount, f64 threshold,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// Edge-preserving bilateral filter (replicate border).
+[[nodiscard]] ImageStatus imbilatfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                         f64 degree_of_smoothing, f64 spatial_sigma,
+                                         MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// Local standard deviation, general order-statistic, local entropy, and local range filters.
+[[nodiscard]] ImageStatus stdfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                     ArrayRef<u8> domain_col_major, usize dom_h, usize dom_w,
+                                     MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus ordfilt2_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                      i32 nth, ArrayRef<u8> domain_col_major, usize dom_h,
+                                      usize dom_w, ArrayRef<f64> additive_offsets, PadMode boundary,
+                                      f64 pad_value, MutArrayRef<f64> out_col_major,
+                                      Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus entropyfilt_u8(ArrayRef<u8> img_col_major, usize height, usize width,
+                                         i32 nbins, ArrayRef<u8> domain_col_major, usize dom_h,
+                                         usize dom_w, MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus rangefilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       ArrayRef<u8> domain_col_major, usize dom_h, usize dom_w,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// Adaptive 2D Wiener filter (`noise_in` NaN => estimate as mean local variance).
+[[nodiscard]] ImageStatus wiener2_2d(ArrayRef<f64> unit_col_major, usize height, usize width,
+                                     usize nh, usize nw, f64 noise_in,
+                                     MutArrayRef<f64> out_col_major, f64& noise_out,
+                                     Allocator* alloc = nullptr);
+
+// 3D separable box, separable Gaussian (replicate border), and 3D median (symmetric border).
+[[nodiscard]] ImageStatus imboxfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
+                                         usize pages, i32 fh, i32 fw, i32 fp,
+                                         MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus imgaussfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
+                                           usize pages, f64 sig_h, f64 sig_w, f64 sig_p,
+                                           MutArrayRef<f64> out_col_major,
+                                           Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus medfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
+                                       usize pages, i32 m, i32 n, i32 p,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D convolution Toeplitz matrix (`((m+h_rows-1)*(n+h_cols-1)) x (m*n)`).
+[[nodiscard]] ImageStatus convmtx2_f64(ArrayRef<f64> h_col_major, usize h_rows, usize h_cols,
+                                       usize m, usize n, MutArrayRef<f64> out_col_major) noexcept;
+
+// 2D frequency response (`out_h` is `m x n` col-major, `out_f1` length `m`, `out_f2` length `n`).
+[[nodiscard]] ImageStatus freqz2_2d(ArrayRef<f64> h_col_major, usize h_rows, usize h_cols, usize m,
+                                    usize n, MutArrayRef<c64> out_h_col_major,
+                                    MutArrayRef<f64> out_f1, MutArrayRef<f64> out_f2,
+                                    Allocator* alloc = nullptr);
+
+// Perona-Malik 2D anisotropic diffusion.
+[[nodiscard]] ImageStatus imdiffusefilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                           ArrayRef<f64> grad_thresh_per_iter, bool maximal_conn,
+                                           bool exponential_cond, MutArrayRef<f64> out_col_major,
+                                           Allocator* alloc = nullptr);
+
+// Single-filter 2D Gabor magnitude and phase (FFT domain).
+[[nodiscard]] ImageStatus imgaborfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                         f64 wavelength, f64 orientation_deg, f64 sfb, f64 aspect,
+                                         MutArrayRef<f64> out_mag_col_major,
+                                         MutArrayRef<f64> out_phase_col_major,
+                                         Allocator* alloc = nullptr);
+
+// Immerkaer (1996) noise standard deviation estimate & Non-Local Means 2D denoising.
+[[nodiscard]] f64 immerkaer_dos_2d(ArrayRef<f64> img_col_major, usize height, usize width) noexcept;
+[[nodiscard]] ImageStatus imnlmfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       f64 dos, i32 swsize, i32 cwsize,
+                                       MutArrayRef<f64> out_col_major, f64& est_dos_out,
+                                       Allocator* alloc = nullptr);
+
 } // namespace keel::image

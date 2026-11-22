@@ -59,6 +59,7 @@ add_library(keel_image STATIC
     src/dehaze.cpp
     src/contrast.cpp
     src/morph.cpp
+    src/filter.cpp
 )
 add_library(keel::image ALIAS keel_image)
 

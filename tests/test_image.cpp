@@ -505,6 +505,81 @@ void test_morph() {
     CHECK(pts.size() >= 16 && pts[0].row == 1 && pts[0].col == 1);
 }
 
+void test_filter() {
+    // 1. fspecial kernels
+    im::Kernel2D k;
+    CHECK(im::fspecial_average(3, 3, k) == im::ImageStatus::kOk);
+    CHECK(k.rows == 3 && k.cols == 3);
+    CHECK_NEAR(k.data_col_major[0], 1.0 / 9.0, 1e-12);
+
+    CHECK(im::fspecial_gaussian(5, 5, 1.0, k) == im::ImageStatus::kOk);
+    f64 gsum = 0.0;
+    for (usize i = 0; i < k.data_col_major.size(); ++i) gsum += k.data_col_major[i];
+    CHECK_NEAR(gsum, 1.0, 1e-12);
+
+    CHECK(im::fspecial_disk(3.0, k) == im::ImageStatus::kOk);
+    f64 dsum = 0.0;
+    for (usize i = 0; i < k.data_col_major.size(); ++i) dsum += k.data_col_major[i];
+    CHECK_NEAR(dsum, 1.0, 1e-12);
+
+    CHECK(im::fspecial_motion(9.0, 30.0, k) == im::ImageStatus::kOk);
+    f64 msum = 0.0;
+    for (usize i = 0; i < k.data_col_major.size(); ++i) msum += k.data_col_major[i];
+    CHECK_NEAR(msum, 1.0, 1e-10);
+
+    // 2. imfilter_2d, medfilt2, imsharpen, imbilatfilt, stdfilt, wiener2
+    keel::Array<f64> img(16 * 16, 10.0);
+    img[8 * 16 + 8] = 100.0;
+    keel::Array<f64> out(16 * 16, 0.0);
+    CHECK(im::medfilt2_f64(img.as_ref(), 16, 16, 3, 3, out.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(out[8 * 16 + 8], 10.0, 1e-12);
+
+    keel::Array<u8> u_in(16 * 16, u8{10}), u_out(16 * 16, u8{0});
+    u_in[8 * 16 + 8] = 250;
+    CHECK(im::medfilt2_u8(u_in.as_ref(), 16, 16, 3, 3, u_out.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(u_out[8 * 16 + 8] == 10);
+    CHECK(im::box_filter_2d_u8_replicate(u_in.as_ref(), 16, 16, 3, u_out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(u_out[8 * 16 + 8] == 37);
+
+    CHECK(im::imsharpen_2d(img.as_ref(), 16, 16, 1.0, 0.8, 0.0, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(out[8 * 16 + 8] > 100.0);
+
+    CHECK(im::imbilatfilt_2d(img.as_ref(), 16, 16, 100.0, 1.0, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(out[8 * 16 + 8] > 50.0);
+
+    keel::Array<u8> dom(9, u8{1});
+    CHECK(im::stdfilt_2d(img.as_ref(), 16, 16, dom.as_ref(), 3, 3, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(out[2 * 16 + 2], 0.0, 1e-12);
+    CHECK(out[8 * 16 + 8] > 20.0);
+
+    f64 w_noise = 0.0;
+    CHECK(im::wiener2_2d(img.as_ref(), 16, 16, 3, 3, keel::Limits<f64>::quiet_nan(),
+                         out.as_mut_ref(), w_noise) == im::ImageStatus::kOk);
+    CHECK(w_noise >= 0.0);
+
+    // 3. imdiffusefilt, imgaborfilt, imnlmfilt
+    const f64 kt[3] = {5.0, 5.0, 5.0};
+    CHECK(im::imdiffusefilt_2d(img.as_ref(), 16, 16, kt, true, true, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(out[8 * 16 + 8] <= 100.0);
+
+    keel::Array<f64> mag(16 * 16, 0.0), ph(16 * 16, 0.0);
+    CHECK(im::imgaborfilt_2d(img.as_ref(), 16, 16, 4.0, 0.0, 1.0, 0.5, mag.as_mut_ref(),
+                             ph.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(mag[8 * 16 + 8] > 0.0);
+
+    keel::Array<f64> big(24 * 24, 5.0), nlm_out(24 * 24, 0.0);
+    f64 est_dos = 0.0;
+    CHECK(im::imnlmfilt_2d(big.as_ref(), 24, 24, -1.0, 5, 3, nlm_out.as_mut_ref(), est_dos) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(nlm_out[12 * 24 + 12], 5.0, 1e-12);
+    CHECK(est_dos > 0.0);
+}
+
 } // namespace
 
 int main() {
@@ -516,6 +591,7 @@ int main() {
     test_illum_geom_fir2d_dehaze();
     test_contrast();
     test_morph();
+    test_filter();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");
