@@ -291,6 +291,31 @@ void test_illum_geom_fir2d_dehaze() {
     CHECK(im::rotate_2d(rect, 3, 5, 1, 90.0, true, false, rot90, rh, rw) == im::ImageStatus::kOk);
     CHECK_NEAR(rot90[0], rect[4 * 3 + 0], 1e-12);
 
+    // rotate_2d Keys bicubic (loose and crop)
+    f64 blk[10 * 12]{};
+    for (usize col = 3; col <= 8; ++col) {
+        for (usize row = 2; row <= 6; ++row) {
+            blk[col * 10 + row] = 1.0;
+        }
+    }
+    usize bh = 0, bw = 0;
+    im::rotate_2d_dims(10, 12, 10.0, false, bh, bw);
+    CHECK(bh == 12 && bw == 14);
+    f64 rot_bc[12 * 14]{};
+    CHECK(im::rotate_2d(blk, 10, 12, 1, 10.0, im::RotateInterp::kBicubic, false, rot_bc, bh, bw) ==
+          im::ImageStatus::kOk);
+    f64 bc_sum = 0.0;
+    for (usize i = 0; i < bh * bw; ++i) bc_sum += rot_bc[i];
+    CHECK_NEAR(bc_sum, 30.000512049392, 1e-9);
+    CHECK_NEAR(rot_bc[4 * bh + 3], 0.670062299259, 1e-9);
+    CHECK_NEAR(rot_bc[5 * bh + 4], 1.021533003648, 1e-9);
+
+    f64 rot_bc_crop[10 * 12]{};
+    CHECK(im::rotate_2d(blk, 10, 12, 1, 10.0, im::RotateInterp::kBicubic, true, rot_bc_crop, 10,
+                        12) == im::ImageStatus::kOk);
+    CHECK_NEAR(rot_bc_crop[4 * 10 + 3], 1.021533003648, 1e-9);
+    CHECK_NEAR(rot_bc_crop[5 * 10 + 4], 1.0, 1e-12);
+
     f64 tr_out[4 * 4]{};
     CHECK(im::translate_2d(img4, 4, 4, 1, 0.0, 0.0, tr_out) == im::ImageStatus::kOk);
     CHECK_NEAR(tr_out[5], 3.5, 1e-12);

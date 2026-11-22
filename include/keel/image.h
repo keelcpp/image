@@ -310,8 +310,19 @@ enum class ResizeKernel : u8 {
                                     f64 scale_z, ResizeKernel kernel, bool antialias,
                                     MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
 
+enum class RotateInterp : u8 {
+    kNearest = 0,
+    kBilinear,
+    kBicubic,
+};
+
 void rotate_2d_dims(usize in_h, usize in_w, f64 angle_deg, bool crop, usize& out_h,
                     usize& out_w) noexcept;
+
+[[nodiscard]] ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w,
+                                    usize channels, f64 angle_deg, RotateInterp interp, bool crop,
+                                    MutArrayRef<f64> out_col_major, usize out_h,
+                                    usize out_w) noexcept;
 
 [[nodiscard]] ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w,
                                     usize channels, f64 angle_deg, bool nearest, bool crop,

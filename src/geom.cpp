@@ -358,8 +358,48 @@ void rotate_2d_dims(usize in_h, usize in_w, f64 angle_deg, bool crop, usize& out
     if (out_w < 1) out_w = 1;
 }
 
+inline f64 keys_cubic_weight(f64 t) noexcept {
+    const f64 x = abs(t);
+    if (x <= 1.0) return (1.5 * x - 2.5) * x * x + 1.0;
+    if (x < 2.0) return ((-0.5 * x + 2.5) * x - 4.0) * x + 2.0;
+    return 0.0;
+}
+
+inline f64 sample_bicubic(ArrayRef<f64> in, usize in_h, usize in_w, usize in_off, f64 ys,
+                          f64 xs) noexcept {
+    const i64 ix = as<i64>(floor(xs));
+    const i64 iy = as<i64>(floor(ys));
+    const i64 ih = as<i64>(in_h);
+    const i64 iw = as<i64>(in_w);
+    if (ix + 2 < 0 || ix - 1 >= iw || iy + 2 < 0 || iy - 1 >= ih) {
+        return 0.0;
+    }
+    const f64 fx = xs - as<f64>(ix);
+    const f64 fy = ys - as<f64>(iy);
+    f64 wx[4], wy[4];
+    for (i32 k = 0; k < 4; ++k) {
+        wx[k] = keys_cubic_weight(fx - as<f64>(k - 1));
+        wy[k] = keys_cubic_weight(fy - as<f64>(k - 1));
+    }
+    const f64* src = in.data() + in_off;
+    f64 sum = 0.0;
+    for (i32 kx = 0; kx < 4; ++kx) {
+        const i64 xx = ix + kx - 1;
+        if (xx < 0 || xx >= iw) continue;
+        const f64* col = src + as<usize>(xx) * in_h;
+        f64 col_sum = 0.0;
+        for (i32 ky = 0; ky < 4; ++ky) {
+            const i64 yy = iy + ky - 1;
+            if (yy < 0 || yy >= ih) continue;
+            col_sum += wy[ky] * col[as<usize>(yy)];
+        }
+        sum += wx[kx] * col_sum;
+    }
+    return sum;
+}
+
 ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize channels,
-                      f64 angle_deg, bool nearest, bool crop, MutArrayRef<f64> out_col_major,
+                      f64 angle_deg, RotateInterp interp, bool crop, MutArrayRef<f64> out_col_major,
                       usize out_h, usize out_w) noexcept {
     if (in_col_major.size() != in_h * in_w * channels) return ImageStatus::kInvalidArgument;
     if (out_col_major.size() != out_h * out_w * channels) return ImageStatus::kInvalidArgument;
@@ -428,10 +468,12 @@ ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize 
                 const f64 xs = co * dx - si * dy + cx_in;
                 const f64 ys = si * dx + co * dy + cy_in;
                 f64 v = 0.0;
-                if (nearest) {
+                if (interp == RotateInterp::kNearest) {
                     const i32 yi = round_half_to_even_i32(ys);
                     const i32 xi = round_half_to_even_i32(xs);
                     v = sample_zero_oob(in_col_major, in_h, in_w, in_off, yi, xi);
+                } else if (interp == RotateInterp::kBicubic) {
+                    v = sample_bicubic(in_col_major, in_h, in_w, in_off, ys, xs);
                 } else {
                     v = sample_bilinear(in_col_major, in_h, in_w, in_off, ys, xs);
                 }
@@ -440,6 +482,14 @@ ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize 
         }
     }
     return ImageStatus::kOk;
+}
+
+ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize channels,
+                      f64 angle_deg, bool nearest, bool crop, MutArrayRef<f64> out_col_major,
+                      usize out_h, usize out_w) noexcept {
+    return rotate_2d(in_col_major, in_h, in_w, channels, angle_deg,
+                     nearest ? RotateInterp::kNearest : RotateInterp::kBilinear, crop,
+                     out_col_major, out_h, out_w);
 }
 
 ImageStatus translate_2d(ArrayRef<f64> in_col_major, usize h, usize w, usize channels, f64 dx,
