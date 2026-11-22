@@ -475,4 +475,154 @@ enum class WcodematMode : u8 {
 // Shannon entropy in bits (`-sum p_i log2(p_i)`) from histogram bin counts.
 [[nodiscard]] f64 shannon_entropy(ArrayRef<f64> hist_counts) noexcept;
 
+// ============================================================================
+// Morphological Operations (2D & 3D)
+// ============================================================================
+
+struct StrelMask {
+    usize rows = 0;
+    usize cols = 0;
+    Array<u8> mask_col_major; // 0/1 column-major (rows * cols)
+};
+
+[[nodiscard]] ImageStatus strel_square(i32 n, StrelMask& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus strel_rect(i32 rows, i32 cols, StrelMask& out,
+                                     Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus strel_diamond(i32 radius, StrelMask& out, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus strel_disk(f64 radius, i32 n_periodic, StrelMask& out,
+                                     Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus strel_line(f64 length, f64 theta_deg, StrelMask& out,
+                                     Allocator* alloc = nullptr);
+
+// Flat structuring element erosion/dilation on column-major u8 (logical or uint8) images.
+// Uses van Herk-Gil-Werman O(width) fast path for column-contiguous centered SEs.
+[[nodiscard]] ImageStatus morph_erode_u8(ArrayRef<u8> src_col_major, usize height, usize width,
+                                         ArrayRef<u8> se_col_major, usize se_h, usize se_w,
+                                         MutArrayRef<u8> dst_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus morph_dilate_u8(ArrayRef<u8> src_col_major, usize height, usize width,
+                                          ArrayRef<u8> se_col_major, usize se_h, usize se_w,
+                                          MutArrayRef<u8> dst_col_major,
+                                          Allocator* alloc = nullptr);
+
+// Flat structuring element erosion/dilation on column-major f64 images (preserves +-Inf).
+[[nodiscard]] ImageStatus morph_erode_f64(ArrayRef<f64> src_col_major, usize height, usize width,
+                                          ArrayRef<u8> se_col_major, usize se_h, usize se_w,
+                                          MutArrayRef<f64> dst_col_major) noexcept;
+[[nodiscard]] ImageStatus morph_dilate_f64(ArrayRef<f64> src_col_major, usize height, usize width,
+                                           ArrayRef<u8> se_col_major, usize se_h, usize se_w,
+                                           MutArrayRef<f64> dst_col_major) noexcept;
+
+// Morphological reconstruction by dilation (Vincent 1993 fast hybrid algorithm).
+[[nodiscard]] ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major,
+                                            ArrayRef<f64> mask_col_major, usize height, usize width,
+                                            i32 conn, MutArrayRef<f64> out_col_major,
+                                            Allocator* alloc = nullptr);
+
+// Fill interior holes in binary (0/1) or grayscale f64 2D images.
+[[nodiscard]] ImageStatus imfill_holes_binary(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                              i32 conn, MutArrayRef<u8> out_col_major,
+                                              Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus imfill_holes_gray(ArrayRef<f64> img_col_major, usize height, usize width,
+                                            i32 conn, MutArrayRef<f64> out_col_major,
+                                            Allocator* alloc = nullptr);
+
+// Regional maxima / minima (output 0/1 mask).
+[[nodiscard]] ImageStatus imregionalmax_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                           i32 conn, MutArrayRef<u8> out_col_major,
+                                           Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus imregionalmin_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                           i32 conn, MutArrayRef<u8> out_col_major,
+                                           Allocator* alloc = nullptr);
+
+// H-maxima / H-minima transforms.
+[[nodiscard]] ImageStatus imhmax_2d(ArrayRef<f64> img_col_major, usize height, usize width, f64 h,
+                                    i32 conn, MutArrayRef<f64> out_col_major,
+                                    Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus imhmin_2d(ArrayRef<f64> img_col_major, usize height, usize width, f64 h,
+                                    i32 conn, MutArrayRef<f64> out_col_major,
+                                    Allocator* alloc = nullptr);
+
+// Minima imposition (Soille 1999). `is_float_class` chooses h = (max-min)/1000 vs h = 1.
+[[nodiscard]] ImageStatus imimposemin_2d(ArrayRef<f64> img_col_major, ArrayRef<u8> bw_col_major,
+                                         usize height, usize width, bool is_float_class, i32 conn,
+                                         MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// Clear or keep foreground components touching the 2D image border.
+[[nodiscard]] ImageStatus imclearborder_binary(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                               i32 conn, MutArrayRef<u8> out_col_major,
+                                               Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus imkeepborder_binary(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                              i32 conn, MutArrayRef<u8> out_col_major,
+                                              Allocator* alloc = nullptr);
+
+// Pack / unpack binary 2D images into 32-bit column words (`packed_h = ceil(height / 32)`).
+[[nodiscard]] ImageStatus bwpack_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                    MutArrayRef<u32> out_col_major) noexcept;
+[[nodiscard]] ImageStatus bwunpack_2d(ArrayRef<u32> packed_col_major, usize packed_h, usize width,
+                                      usize out_h, MutArrayRef<u8> out_col_major) noexcept;
+
+// General n x n binary neighborhood LUT filter (`lut.size() == 2^(n*n)`).
+[[nodiscard]] ImageStatus bwlookup_nxn(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                       ArrayRef<f64> lut, usize n,
+                                       MutArrayRef<f64> out_col_major) noexcept;
+
+enum class BwmorphOp : u8 {
+    kDilate = 0,
+    kErode,
+    kBridge,
+    kClean,
+    kDiag,
+    kEndpoints,
+    kFatten,
+    kFill,
+    kHbreak,
+    kMajority,
+    kPerim4,
+    kPerim8,
+    kRemove,
+    kOpen,
+    kClose,
+    kBothat,
+    kTophat,
+    kThin,
+    kSkel,
+    kShrink,
+    kSpur,
+    kThicken,
+    kBranchpoints,
+};
+
+// Binary 2D morphology (`iterations < 0` repeats until convergence).
+[[nodiscard]] ImageStatus bwmorph_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                     BwmorphOp op, i32 iterations, MutArrayRef<u8> out_col_major,
+                                     Allocator* alloc = nullptr);
+
+enum class Bwmorph3Op : u8 {
+    kBranchpoints = 0,
+    kClean,
+    kEndpoints,
+    kFill,
+    kMajority,
+    kRemove,
+};
+
+// Binary 3D volume morphology (column-major height x width x pages).
+[[nodiscard]] ImageStatus bwmorph3_3d(ArrayRef<u8> vol_col_major, usize height, usize width,
+                                      usize pages, Bwmorph3Op op,
+                                      MutArrayRef<u8> out_col_major) noexcept;
+
+struct BoundaryPoint {
+    i64 row = 0; // 0-based
+    i64 col = 0; // 0-based
+};
+
+// Moore-Neighbor boundary tracing on 2D binary image.
+// `first_step_dir`: 0..7 for 8-conn (N,NE,E,SE,S,SW,W,NW); 0..3 for 4-conn (N,E,S,W).
+// `max_points == 0` traces the full closed contour.
+[[nodiscard]] ImageStatus bwtraceboundary_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                             i64 start_row, i64 start_col, i32 first_step_dir,
+                                             i32 conn, usize max_points, bool clockwise,
+                                             Array<BoundaryPoint>& out_points);
+
 } // namespace keel::image

@@ -425,6 +425,86 @@ void test_contrast() {
     CHECK_NEAR(w_out[5], 4.0, 1e-12);
 }
 
+void test_morph() {
+    // 1. Strel shapes
+    im::StrelMask sq, dia, dsk, ln;
+    CHECK(im::strel_square(3, sq) == im::ImageStatus::kOk);
+    CHECK(sq.rows == 3 && sq.cols == 3 && sq.mask_col_major.size() == 9);
+    CHECK(im::strel_diamond(2, dia) == im::ImageStatus::kOk);
+    CHECK(dia.rows == 5 && dia.cols == 5 && dia.mask_col_major[0] == 0 &&
+          dia.mask_col_major[12] == 1);
+    CHECK(im::strel_disk(5.0, 4, dsk) == im::ImageStatus::kOk);
+    CHECK(dsk.rows == 9 && dsk.cols == 9 && dsk.mask_col_major[4 * 9 + 4] == 1);
+    im::StrelMask dsk_euc;
+    CHECK(im::strel_disk(5.0, 0, dsk_euc) == im::ImageStatus::kOk);
+    CHECK(dsk_euc.rows == 11 && dsk_euc.cols == 11 && dsk_euc.mask_col_major[5 * 11 + 5] == 1);
+    CHECK(im::strel_line(5.0, 0.0, ln) == im::ImageStatus::kOk);
+    CHECK(ln.rows == 1 && ln.cols == 5);
+
+    // 2. Erode / dilate (van Herk u8 + f64)
+    keel::Array<u8> bw(9 * 9, u8{0});
+    bw[4 * 9 + 4] = 1;
+    keel::Array<u8> dil(9 * 9, u8{0}), ero(9 * 9, u8{0});
+    CHECK(im::morph_dilate_u8(bw.as_ref(), 9, 9, sq.mask_col_major.as_ref(), sq.rows, sq.cols,
+                              dil.as_mut_ref()) == im::ImageStatus::kOk);
+    usize dil_sum = 0;
+    for (usize i = 0; i < 81; ++i) dil_sum += dil[i];
+    CHECK(dil_sum == 9);
+    CHECK(im::morph_erode_u8(dil.as_ref(), 9, 9, sq.mask_col_major.as_ref(), sq.rows, sq.cols,
+                             ero.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(ero[4 * 9 + 4] == 1);
+
+    keel::Array<f64> gf(9 * 9, 0.0), gd(9 * 9, 0.0), ge(9 * 9, 0.0);
+    gf[4 * 9 + 4] = 10.0;
+    CHECK(im::morph_dilate_f64(gf.as_ref(), 9, 9, sq.mask_col_major.as_ref(), sq.rows, sq.cols,
+                               gd.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(gd[3 * 9 + 3], 10.0, 1e-12);
+    CHECK(im::morph_erode_f64(gd.as_ref(), 9, 9, sq.mask_col_major.as_ref(), sq.rows, sq.cols,
+                              ge.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(ge[4 * 9 + 4], 10.0, 1e-12);
+
+    // 3. imfill_holes_binary & imclearborder_binary
+    keel::Array<u8> ring(7 * 7, u8{0});
+    for (usize c = 1; c <= 5; ++c) {
+        for (usize r = 1; r <= 5; ++r) {
+            if (r == 1 || r == 5 || c == 1 || c == 5) ring[c * 7 + r] = 1;
+        }
+    }
+    keel::Array<u8> filled(7 * 7, u8{0});
+    CHECK(im::imfill_holes_binary(ring.as_ref(), 7, 7, 4, filled.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(filled[3 * 7 + 3] == 1);
+
+    keel::Array<u8> cleared(7 * 7, u8{0});
+    ring[0] = 1; // border touch
+    CHECK(im::imclearborder_binary(ring.as_ref(), 7, 7, 4, cleared.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(cleared[0] == 0 && cleared[1 * 7 + 1] == 1);
+
+    // 4. bwpack / bwunpack roundtrip
+    keel::Array<u32> packed(1 * 7, u32{0});
+    keel::Array<u8> unpacked(7 * 7, u8{0});
+    CHECK(im::bwpack_2d(filled.as_ref(), 7, 7, packed.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(im::bwunpack_2d(packed.as_ref(), 1, 7, 7, unpacked.as_mut_ref()) == im::ImageStatus::kOk);
+    for (usize i = 0; i < 49; ++i) CHECK(unpacked[i] == filled[i]);
+
+    // 5. bwmorph & bwmorph3 & bwtraceboundary
+    keel::Array<u8> thinned(7 * 7, u8{0});
+    CHECK(im::bwmorph_2d(filled.as_ref(), 7, 7, im::BwmorphOp::kThin, -1, thinned.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(thinned[3 * 7 + 3] == 1);
+
+    keel::Array<u8> vol(3 * 3 * 3, u8{1}), vol_out(3 * 3 * 3, u8{0});
+    CHECK(im::bwmorph3_3d(vol.as_ref(), 3, 3, 3, im::Bwmorph3Op::kRemove, vol_out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(vol_out[1 * 9 + 1 * 3 + 1] == 0 && vol_out[0] == 1);
+
+    keel::Array<im::BoundaryPoint> pts;
+    CHECK(im::bwtraceboundary_2d(filled.as_ref(), 7, 7, 1, 1, 2, 8, 0, true, pts) ==
+          im::ImageStatus::kOk);
+    CHECK(pts.size() >= 16 && pts[0].row == 1 && pts[0].col == 1);
+}
+
 } // namespace
 
 int main() {
@@ -435,6 +515,7 @@ int main() {
     test_chromadapt_and_filters();
     test_illum_geom_fir2d_dehaze();
     test_contrast();
+    test_morph();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");
