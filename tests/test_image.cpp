@@ -357,6 +357,74 @@ void test_illum_geom_fir2d_dehaze() {
     CHECK(atm_est[0] > 0.7 && atm_est[0] <= 1.0);
 }
 
+void test_contrast() {
+    // 1. stretchlim_unit / imadjust_unit / histeq_unit / shannon_entropy
+    const f64 ramp[10] = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0};
+    f64 lim[2]{};
+    CHECK(im::stretchlim_unit(ramp, 10, 1, 256, 0.01, 0.99, lim) == im::ImageStatus::kOk);
+    CHECK(lim[0] < lim[1]);
+
+    f64 adj[10]{};
+    CHECK(im::imadjust_unit(ramp, 0.1, 1.0, 0.0, 1.0, 1.0, adj) == im::ImageStatus::kOk);
+    CHECK_NEAR(adj[0], 0.0, 1e-12);
+    CHECK_NEAR(adj[9], 1.0, 1e-12);
+
+    f64 eq[10]{};
+    CHECK(im::histeq_unit(ramp, 64, eq) == im::ImageStatus::kOk);
+    CHECK(eq[0] <= eq[9] && eq[9] <= 1.0);
+
+    const f64 h_unif[4] = {10.0, 10.0, 10.0, 10.0};
+    CHECK_NEAR(im::shannon_entropy(h_unif), 2.0, 1e-12);
+
+    // 2. clahe_2d (uniform, rayleigh, exponential)
+    keel::Array<f64> img(16 * 16, 0.0);
+    for (usize c = 0; c < 16; ++c)
+        for (usize r = 0; r < 16; ++r)
+            img[c * 16 + r] = keel::as<f64>(r + c) / 30.0;
+    keel::Array<f64> cl_out(16 * 16, 0.0);
+    CHECK(im::clahe_2d(img.as_ref(), 16, 16, 2, 2, 0.01, 64, im::ClaheDistribution::kUniform, 0.4,
+                       0.0, 1.0, false, cl_out.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(cl_out[0] < cl_out[255]);
+
+    // 3. multithresh_otsu (1, 2, 3 levels)
+    keel::Array<f64> bimod(40, 0.0);
+    for (usize i = 0; i < 10; ++i) bimod[i] = 10.0;
+    for (usize i = 10; i < 20; ++i) bimod[i] = 80.0;
+    for (usize i = 20; i < 30; ++i) bimod[i] = 160.0;
+    for (usize i = 30; i < 40; ++i) bimod[i] = 240.0;
+    f64 t1[1]{}, t2[2]{}, t3[3]{}, em = 0.0;
+    CHECK(im::multithresh_otsu(bimod.as_ref(), 1, true, t1, em) == im::ImageStatus::kOk);
+    CHECK(t1[0] >= 80.0 && t1[0] <= 160.0 && em > 0.7);
+    CHECK(im::multithresh_otsu(bimod.as_ref(), 2, true, t2, em) == im::ImageStatus::kOk);
+    CHECK(t2[0] < t2[1]);
+    CHECK(im::multithresh_otsu(bimod.as_ref(), 3, true, t3, em) == im::ImageStatus::kOk);
+    CHECK(t3[0] < t3[1] && t3[1] < t3[2] && em > 0.95);
+
+    // 4. imhistmatch_unit / adaptthresh_2d / flatfield_2d / wcodemat
+    f64 hm_out[10]{}, hg[16]{};
+    CHECK(im::imhistmatch_unit(ramp, ramp, 256, 16, hm_out, hg) == im::ImageStatus::kOk);
+    CHECK(hm_out[0] <= hm_out[9]);
+
+    keel::Array<f64> thr(16 * 16, 0.0);
+    CHECK(im::adaptthresh_2d(img.as_ref(), 16, 16, 0.5, 5, false, thr.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(thr[0] >= 0.0 && thr[255] <= 1.0);
+    CHECK(im::adaptthresh_2d(img.as_ref(), 16, 16, 0.5, 5, true, thr.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+
+    keel::Array<f64> ff_in(16 * 16, 0.5), ff_out(16 * 16, 0.0);
+    CHECK(im::flatfield_2d(ff_in.as_ref(), 16, 16, 1, 3.0, {}, ff_out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(ff_out[100], 0.5, 1e-10);
+
+    const f64 w_in[6] = {1.0, 4.0, -2.0, -5.0, 3.0, 6.0};
+    f64 w_out[6]{};
+    CHECK(im::wcodemat(w_in, 2, 3, 1, 4, im::WcodematMode::kMat, true, w_out) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(w_out[0], 1.0, 1e-12);
+    CHECK_NEAR(w_out[5], 4.0, 1e-12);
+}
+
 } // namespace
 
 int main() {
@@ -366,6 +434,7 @@ int main() {
     test_demosaic_and_texture();
     test_chromadapt_and_filters();
     test_illum_geom_fir2d_dehaze();
+    test_contrast();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");

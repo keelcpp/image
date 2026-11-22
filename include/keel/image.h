@@ -401,4 +401,78 @@ enum class DehazeContrast : u8 {
                                  MutArrayRef<f64> out_thickness_col_major, MutArrayRef<f64> out_atm,
                                  Allocator* alloc = nullptr);
 
+// ============================================================================
+// Contrast Enhancement, Adaptive Thresholding, Multi-Otsu & Flat-Fielding
+// ============================================================================
+
+// Separable 2D Gaussian blur (`symmetric_pad == false` => replicate, `true` => half-sample mirror).
+[[nodiscard]] ImageStatus gaussian_filter_2d(ArrayRef<f64> in_col_major, usize height, usize width,
+                                             f64 sigma, i32 filter_size, bool symmetric_pad,
+                                             MutArrayRef<f64> out_col_major,
+                                             Allocator* alloc = nullptr);
+
+// Per-channel histogram stretch limits on unit [0, 1] planar data (`out_lo_hi` has length 2*channels).
+[[nodiscard]] ImageStatus stretchlim_unit(ArrayRef<f64> unit_planar, usize plane_len,
+                                          usize channels, i32 nbins, f64 low_tol, f64 high_tol,
+                                          MutArrayRef<f64> out_lo_hi, Allocator* alloc = nullptr);
+
+// Gamma-mapped contrast adjustment on unit [0, 1] data.
+[[nodiscard]] ImageStatus imadjust_unit(ArrayRef<f64> unit_in, f64 low_in, f64 high_in,
+                                        f64 low_out, f64 high_out, f64 gamma,
+                                        MutArrayRef<f64> unit_out) noexcept;
+
+// Global histogram equalization on unit [0, 1] data.
+[[nodiscard]] ImageStatus histeq_unit(ArrayRef<f64> unit_in, i32 nbins, MutArrayRef<f64> unit_out,
+                                      Allocator* alloc = nullptr);
+
+enum class ClaheDistribution : u8 {
+    kUniform = 0,
+    kRayleigh,
+    kExponential,
+};
+
+// Contrast Limited Adaptive Histogram Equalization (Zuiderveld 1994) on 2D column-major image.
+[[nodiscard]] ImageStatus clahe_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                   i32 num_tiles_r, i32 num_tiles_c, f64 clip_limit, i32 nbins,
+                                   ClaheDistribution dist, f64 alpha, f64 class_lo, f64 class_hi,
+                                   bool range_original, MutArrayRef<f64> out_col_major,
+                                   Allocator* alloc = nullptr);
+
+// Multi-level Otsu thresholding (1 <= num_levels <= 5; exact for 1-2, global DP for 3-5).
+[[nodiscard]] ImageStatus multithresh_otsu(ArrayRef<f64> data, i32 num_levels, bool integer_scale,
+                                           MutArrayRef<f64> out_thresh, f64& out_effectiveness,
+                                           Allocator* alloc = nullptr);
+
+// Gonzalez histogram matching of `in_unit` to `ref_unit` (`out_hgram` may be empty or length `nbins`).
+[[nodiscard]] ImageStatus imhistmatch_unit(ArrayRef<f64> in_unit, ArrayRef<f64> ref_unit, i32 npts,
+                                           i32 nbins, MutArrayRef<f64> out_unit,
+                                           MutArrayRef<f64> out_hgram, Allocator* alloc = nullptr);
+
+// Locally adaptive threshold map on [0, 1] 2D image (`gaussian == false` => box mean).
+[[nodiscard]] ImageStatus adaptthresh_2d(ArrayRef<f64> unit_col_major, usize height, usize width,
+                                         f64 sensitivity, i32 neighborhood, bool gaussian,
+                                         MutArrayRef<f64> out_col_major,
+                                         Allocator* alloc = nullptr);
+
+// 2D flat-field illumination correction (`mask_col_major` may be empty or length `height * width`).
+[[nodiscard]] ImageStatus flatfield_2d(ArrayRef<f64> unit_planar_col_major, usize height,
+                                       usize width, usize pages, f64 sigma,
+                                       ArrayRef<u8> mask_col_major,
+                                       MutArrayRef<f64> out_planar_col_major,
+                                       Allocator* alloc = nullptr);
+
+enum class WcodematMode : u8 {
+    kMat = 0,
+    kRow,
+    kCol,
+};
+
+// Pseudo-color quantization into 1..nb levels (`mat` / `row` / `col`).
+[[nodiscard]] ImageStatus wcodemat(ArrayRef<f64> x_col_major, usize height, usize width,
+                                   usize pages, i32 nb, WcodematMode mode, bool absol,
+                                   MutArrayRef<f64> out_col_major) noexcept;
+
+// Shannon entropy in bits (`-sum p_i log2(p_i)`) from histogram bin counts.
+[[nodiscard]] f64 shannon_entropy(ArrayRef<f64> hist_counts) noexcept;
+
 } // namespace keel::image

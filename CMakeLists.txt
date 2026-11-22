@@ -57,6 +57,7 @@ add_library(keel_image STATIC
     src/geom.cpp
     src/fir2d.cpp
     src/dehaze.cpp
+    src/contrast.cpp
 )
 add_library(keel::image ALIAS keel_image)
 
