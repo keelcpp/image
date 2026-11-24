@@ -97,6 +97,46 @@ struct OtsuResult {
                                             MutArrayRef<f64> r, MutArrayRef<f64> g,
                                             MutArrayRef<f64> b) noexcept;
 
+// Wide-gamut BT.2020 / BT.2100 (10- or 12-bit narrow-range uint16) conversions.
+enum class WideColorSpace : u8 {
+    kBt2020 = 0,
+    kBt2100Pq,
+    kBt2100Hlg,
+};
+
+[[nodiscard]] ImageStatus rgbwide_to_ycbcr_planar(ArrayRef<u16> r, ArrayRef<u16> g, ArrayRef<u16> b,
+                                                  i32 bits_per_sample, MutArrayRef<u16> y,
+                                                  MutArrayRef<u16> cb,
+                                                  MutArrayRef<u16> cr) noexcept;
+[[nodiscard]] ImageStatus ycbcr_to_rgbwide_planar(ArrayRef<u16> y, ArrayRef<u16> cb,
+                                                  ArrayRef<u16> cr, i32 bits_per_sample,
+                                                  MutArrayRef<u16> r, MutArrayRef<u16> g,
+                                                  MutArrayRef<u16> b) noexcept;
+[[nodiscard]] ImageStatus rgbwide_to_xyz_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
+                                                i32 bits_per_sample, WideColorSpace cs,
+                                                MutArrayRef<f64> x, MutArrayRef<f64> y,
+                                                MutArrayRef<f64> z) noexcept;
+[[nodiscard]] ImageStatus xyz_to_rgbwide_planar(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> z,
+                                                i32 bits_per_sample, WideColorSpace cs,
+                                                MutArrayRef<u16> r, MutArrayRef<u16> g,
+                                                MutArrayRef<u16> b) noexcept;
+
+// Palette nearest-neighbor RGB quantization, colormap deduplication, and graph coloring.
+[[nodiscard]] ImageStatus rgb_to_ind_nearest_planar(ArrayRef<f64> r, ArrayRef<f64> g,
+                                                    ArrayRef<f64> b, ArrayRef<f64> cmap_r,
+                                                    ArrayRef<f64> cmap_g, ArrayRef<f64> cmap_b,
+                                                    MutArrayRef<u32> out_idx_0based) noexcept;
+[[nodiscard]] ImageStatus colormap_unique(ArrayRef<usize> idx_0based_in, ArrayRef<f64> map_r,
+                                          ArrayRef<f64> map_g, ArrayRef<f64> map_b,
+                                          MutArrayRef<usize> out_idx_0based, Array<f64>& out_r,
+                                          Array<f64>& out_g, Array<f64>& out_b,
+                                          Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus greedy_graph_coloring_2d(ArrayRef<i32> labels_col_major, usize height,
+                                                   usize width, ArrayRef<f64> cmap_r,
+                                                   ArrayRef<f64> cmap_g, ArrayRef<f64> cmap_b,
+                                                   Array<f64>& out_r, Array<f64>& out_g,
+                                                   Array<f64>& out_b, Allocator* alloc = nullptr);
+
 // ============================================================================
 // Image Quality, Statistics & 2D Correlation
 // ============================================================================
@@ -787,5 +827,344 @@ struct Kernel2D {
                                        f64 dos, i32 swsize, i32 cwsize,
                                        MutArrayRef<f64> out_col_major, f64& est_dos_out,
                                        Allocator* alloc = nullptr);
+
+// ============================================================================
+// Image Transforms, Test Patterns, Correlation & Deconvolution
+// ============================================================================
+
+enum class PhantomModel : u8 {
+    kModifiedSheppLogan = 0,
+    kSheppLogan,
+};
+
+// Orthonormal N x N Type-II DCT basis matrix (`dctmtx`).
+[[nodiscard]] ImageStatus dct_matrix(usize n, MutArrayRef<f64> out_col_major) noexcept;
+
+// Separable 2D Type-II DCT and Type-III IDCT (`height x width` col-major).
+[[nodiscard]] ImageStatus dct_2d(ArrayRef<f64> in_col_major, usize height, usize width,
+                                 MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus idct_2d(ArrayRef<f64> in_col_major, usize height, usize width,
+                                  MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D and 3D integral images (zero-bordered `(h+1) x (w+1) [x (d+1)]` col-major).
+[[nodiscard]] ImageStatus integral_image_2d(ArrayRef<f64> in_col_major, usize height, usize width,
+                                            MutArrayRef<f64> out_sat_col_major) noexcept;
+[[nodiscard]] ImageStatus integral_image_3d(ArrayRef<f64> in_col_major, usize height, usize width,
+                                            usize depth,
+                                            MutArrayRef<f64> out_sat_col_major) noexcept;
+
+// Standard 10 x 6 Shepp-Logan ellipse table and `n x n` phantom rasterizer.
+[[nodiscard]] ImageStatus phantom_ellipses(PhantomModel model,
+                                           MutArrayRef<f64> out_10x6_col_major) noexcept;
+[[nodiscard]] ImageStatus phantom_from_ellipses(ArrayRef<f64> ellipses_col_major,
+                                                usize num_ellipses, usize n,
+                                                MutArrayRef<f64> out_col_major,
+                                                Allocator* alloc = nullptr);
+
+// Checkerboard test image (`(2*tiles_y*side) x (2*tiles_x*side)` col-major).
+[[nodiscard]] ImageStatus checkerboard(usize side, usize tiles_y, usize tiles_x,
+                                       MutArrayRef<f64> out_col_major,
+                                       Allocator* alloc = nullptr);
+
+// Point-spread function <-> optical transfer function conversions.
+[[nodiscard]] ImageStatus psf_to_otf(ArrayRef<f64> psf_col_major, usize in_h, usize in_w,
+                                     usize out_h, usize out_w, MutArrayRef<c64> out_otf_col_major,
+                                     Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus otf_to_psf(ArrayRef<c64> otf_col_major, usize in_h, usize in_w,
+                                     usize out_h, usize out_w, MutArrayRef<c64> out_psf_col_major,
+                                     Allocator* alloc = nullptr);
+
+// Normalized 2D cross-correlation (`(ih+th-1) x (iw+tw-1)` col-major).
+[[nodiscard]] ImageStatus normxcorr2(ArrayRef<f64> templ_col_major, usize th, usize tw,
+                                     ArrayRef<f64> img_col_major, usize ih, usize iw,
+                                     MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D Wiener deconvolution (`ncorr`/`icorr` size 1 for scalar spectrum or `height*width` ACF).
+[[nodiscard]] ImageStatus deconvwnr_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       ArrayRef<f64> psf_col_major, usize psf_h, usize psf_w,
+                                       ArrayRef<f64> ncorr_col_major, ArrayRef<f64> icorr_col_major,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D edge taper for FFT-based deconvolution.
+[[nodiscard]] ImageStatus edgetaper_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       ArrayRef<f64> psf_col_major, usize psf_h, usize psf_w,
+                                       MutArrayRef<f64> out_col_major, Allocator* alloc = nullptr);
+
+// 2D Tikhonov-regularized deconvolution (`regop_h == 0 && regop_w == 0` uses default 3x3 Laplacian).
+[[nodiscard]] ImageStatus deconvreg_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       ArrayRef<f64> psf_col_major, usize psf_h, usize psf_w,
+                                       f64 noise_power, f64 lambda_lo, f64 lambda_hi,
+                                       ArrayRef<f64> regop_col_major, usize regop_h, usize regop_w,
+                                       MutArrayRef<f64> out_col_major, f64& lambda_out,
+                                       Allocator* alloc = nullptr);
+
+// ============================================================================
+// Connected Components, Distance Transform & Region Descriptors
+// ============================================================================
+
+inline constexpr u32 kRegionPropBasic = 0u;
+inline constexpr u32 kRegionPropEllipse = 1u << 0;
+inline constexpr u32 kRegionPropPerimeter = 1u << 1;
+
+struct RegionProps2D {
+    i64 area = 0;
+    f64 centroid_x = 0.0; // 0-based column mean
+    f64 centroid_y = 0.0; // 0-based row mean
+    i32 min_col = 0;
+    i32 min_row = 0;
+    i32 max_col = 0;
+    i32 max_row = 0;
+    f64 major_axis_length = 0.0;
+    f64 minor_axis_length = 0.0;
+    f64 eccentricity = 0.0;
+    f64 orientation_deg = 0.0;
+    f64 equiv_diameter = 0.0;
+    f64 extent = 0.0;
+    f64 perimeter = 0.0;
+};
+
+enum class RegionAttr : u8 {
+    kArea = 0,
+    kCircularity,
+    kConvexArea,
+    kEccentricity,
+    kEquivDiameter,
+    kEulerNumber,
+    kExtent,
+    kFilledArea,
+    kMajorAxisLength,
+    kMaxIntensity,
+    kMeanIntensity,
+    kMinIntensity,
+    kMinorAxisLength,
+    kOrientation,
+    kPerimeter,
+    kPerimeterOld,
+    kSolidity,
+};
+
+// 2D / 3D connected component labeling (column-major scan order, labels 1..num_labels_out).
+[[nodiscard]] ImageStatus bwlabel_2d(ArrayRef<u8> bw_col_major, usize height, usize width, i32 conn,
+                                     MutArrayRef<i32> labels_col_major, i32& num_labels_out,
+                                     Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus bwlabel_3d(ArrayRef<u8> vol_col_major, usize height, usize width,
+                                     usize depth, i32 conn, MutArrayRef<i32> labels_col_major,
+                                     i32& num_labels_out, Allocator* alloc = nullptr);
+
+// Binary perimeter, area opening, area filter, seed-based component selection, Euler number.
+[[nodiscard]] ImageStatus bwperim_2d(ArrayRef<u8> bw_col_major, usize height, usize width, i32 conn,
+                                     MutArrayRef<u8> out_col_major) noexcept;
+[[nodiscard]] ImageStatus bwareaopen_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                        i32 min_area, i32 conn, MutArrayRef<u8> out_col_major,
+                                        Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus bwareafilt_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                        f64 lo, f64 hi, usize n_keep, bool keep_largest, i32 conn,
+                                        MutArrayRef<u8> out_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus bwselect_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                      ArrayRef<i32> seed_rows, ArrayRef<i32> seed_cols, i32 conn,
+                                      MutArrayRef<u8> out_col_major, Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus bweuler_2d(ArrayRef<u8> bw_col_major, usize height, usize width, i32 conn,
+                                     f64& euler_out) noexcept;
+
+// Exact O(HW) Euclidean distance transform (Felzenszwalb-Huttenlocher 2004).
+[[nodiscard]] ImageStatus bwdist_euclidean_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                              MutArrayRef<f64> out_dist_col_major,
+                                              Allocator* alloc = nullptr);
+
+// Moore-Neighbor outer boundary tracing for all connected components (CSR offsets).
+[[nodiscard]] ImageStatus bwboundaries_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                          i32 conn, MutArrayRef<i32> labels_col_major,
+                                          i32& num_labels_out, Array<BoundaryPoint>& points_out,
+                                          Array<usize>& offsets_out, Allocator* alloc = nullptr);
+
+// Vossepoel-Smeulders boundary perimeter for a single labeled region.
+[[nodiscard]] f64 region_perimeter_2d(ArrayRef<i32> labels_col_major, usize height, usize width,
+                                      i32 label, i32 start_row, i32 start_col,
+                                      Allocator* alloc = nullptr);
+
+// Per-region geometric descriptors from a 1..num_labels label image.
+[[nodiscard]] ImageStatus region_props_2d(ArrayRef<i32> labels_col_major, usize height, usize width,
+                                          i32 num_labels, u32 prop_flags,
+                                          Array<RegionProps2D>& out_props,
+                                          Allocator* alloc = nullptr);
+
+// Component attribute evaluation (supports all 17 bwpropfilt attributes on CSR pixel lists).
+[[nodiscard]] ImageStatus region_component_attrs(ArrayRef<i32> pixel_rows, ArrayRef<i32> pixel_cols,
+                                                 ArrayRef<usize> comp_offsets, usize height,
+                                                 usize width, i32 conn, RegionAttr attr,
+                                                 ArrayRef<f64> marker_col_major,
+                                                 MutArrayRef<f64> out_values,
+                                                 Allocator* alloc = nullptr);
+
+// 8-direction Freeman chain code and cyclic mod-8 first difference.
+[[nodiscard]] ImageStatus freeman_chain_code(ArrayRef<f64> rows, ArrayRef<f64> cols,
+                                             Array<f64>& out_fcc, Array<f64>& out_diff);
+
+// ============================================================================
+// Gradients, Edge Detection, Corners & Hough Transforms
+// ============================================================================
+
+enum class GradientMethod : u8 {
+    kSobel = 0,
+    kPrewitt,
+    kCentral,
+    kIntermediate,
+};
+
+enum class EdgeMethod : u8 {
+    kSobel = 0,
+    kPrewitt,
+    kRoberts,
+    kLog,
+    kZeroCross,
+    kCanny,
+};
+
+enum class CornerMethod : u8 {
+    kHarris = 0,
+    kMinimumEigenvalue,
+};
+
+struct HoughLine {
+    f64 p1x = 0.0; // 0-based column
+    f64 p1y = 0.0; // 0-based row
+    f64 p2x = 0.0; // 0-based column
+    f64 p2y = 0.0; // 0-based row
+    f64 theta = 0.0;
+    f64 rho = 0.0;
+};
+
+enum class CirclePolarity : u8 {
+    kBright = 0,
+    kDark,
+};
+
+enum class CircleMethod : u8 {
+    kPhaseCode = 0,
+    kTwoStage,
+};
+
+struct CircleDetection {
+    f64 center_x = 0.0; // 0-based column
+    f64 center_y = 0.0; // 0-based row
+    f64 radius = 0.0;
+    f64 metric = 0.0;
+};
+
+// 2D and 3D image directional gradients (`height x width [x depth]` col-major).
+[[nodiscard]] ImageStatus imgradientxy_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                          GradientMethod method, MutArrayRef<f64> out_gx_col_major,
+                                          MutArrayRef<f64> out_gy_col_major) noexcept;
+[[nodiscard]] ImageStatus imgradientxyz_3d(ArrayRef<f64> vol_col_major, usize height, usize width,
+                                           usize depth, GradientMethod method,
+                                           MutArrayRef<f64> out_gx, MutArrayRef<f64> out_gy,
+                                           MutArrayRef<f64> out_gz) noexcept;
+
+// 2D edge detection (`thresh` NaN => automatic threshold).
+[[nodiscard]] ImageStatus edge_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                  EdgeMethod method, f64 thresh, MutArrayRef<u8> out_col_major,
+                                  Allocator* alloc = nullptr);
+
+// Harris / Shi-Tomasi corner response matrix (`filter_coef` empty => default 5-tap Gaussian).
+[[nodiscard]] ImageStatus cornermetric_2d(ArrayRef<f64> unit_col_major, usize height, usize width,
+                                          CornerMethod method, f64 sensitivity_factor,
+                                          ArrayRef<f64> filter_coef, MutArrayRef<f64> out_col_major,
+                                          Allocator* alloc = nullptr);
+
+// Extract up to `max_n` (`< 0` for all) 0-based corner peaks from a cornermetric map.
+[[nodiscard]] ImageStatus corner_peaks_2d(ArrayRef<f64> metric_col_major, usize height, usize width,
+                                          i32 max_n, f64 quality_level,
+                                          Array<BoundaryPoint>& out_peaks,
+                                          Allocator* alloc = nullptr);
+
+// Standard 2D Hough transform, peak extraction, and line segment extraction.
+[[nodiscard]] ImageStatus hough_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                   f64 rho_res, ArrayRef<f64> theta_deg,
+                                   Array<f64>& out_h_col_major, Array<f64>& out_rho,
+                                   Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus houghpeaks_2d(ArrayRef<f64> h_col_major, usize nrho, usize ntheta,
+                                        usize num_peaks, f64 threshold, usize nhood_rho,
+                                        usize nhood_theta, ArrayRef<f64> theta_deg,
+                                        Array<BoundaryPoint>& out_peaks,
+                                        Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus houghlines_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                        ArrayRef<f64> theta_deg, ArrayRef<f64> rho,
+                                        ArrayRef<BoundaryPoint> peaks_0based, f64 fill_gap,
+                                        f64 min_length, Array<HoughLine>& out_lines,
+                                        Allocator* alloc = nullptr);
+
+// Circular Hough Transform (`edge_threshold < 0` => automatic Otsu threshold on normalized Sobel).
+[[nodiscard]] ImageStatus imfindcircles_2d(ArrayRef<f64> gray_col_major, usize height, usize width,
+                                           f64 rmin, f64 rmax, CirclePolarity polarity,
+                                           CircleMethod method, f64 sensitivity, f64 edge_threshold,
+                                           bool use_single_grad,
+                                           Array<CircleDetection>& out_circles,
+                                           Allocator* alloc = nullptr);
+
+// ============================================================================
+// Segmentation, Geodesic Distances, Inpainting & Polyline Simplification
+// ============================================================================
+
+enum class GeodesicMetric : u8 {
+    kCityblock = 0,
+    kChessboard,
+    kQuasiEuclidean,
+};
+
+// Binary mask similarity metrics.
+[[nodiscard]] f64 dice_coeff(ArrayRef<u8> a, ArrayRef<u8> b) noexcept;
+[[nodiscard]] f64 jaccard_index(ArrayRef<u8> a, ArrayRef<u8> b) noexcept;
+
+// Region boundary mask from a 2D label matrix.
+[[nodiscard]] ImageStatus boundarymask_2d(ArrayRef<i64> labels_col_major, usize height, usize width,
+                                          i32 conn, MutArrayRef<u8> out_col_major) noexcept;
+
+// 8-connected intensity-tolerance region growing from 0-based `(seed_row, seed_col)`.
+[[nodiscard]] ImageStatus grayconnected_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                           i32 seed_row, i32 seed_col, f64 tol,
+                                           MutArrayRef<u8> out_col_major,
+                                           Allocator* alloc = nullptr);
+
+// Fast-marching pixel weights from intensity difference or DoG gradient magnitude.
+[[nodiscard]] ImageStatus graydiffweight_f64(ArrayRef<f64> img, f64 ref_gray_val,
+                                             f64 rolloff_factor, f64 cutoff,
+                                             MutArrayRef<f64> out_weights) noexcept;
+[[nodiscard]] ImageStatus gradientweight_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                            f64 sigma_x, f64 sigma_y, f64 rolloff_factor,
+                                            f64 weight_cutoff,
+                                            MutArrayRef<f64> out_weights_col_major,
+                                            Allocator* alloc = nullptr);
+
+// Harmonic (Laplacian) region inpainting solved by conjugate gradient.
+[[nodiscard]] ImageStatus regionfill_2d(ArrayRef<f64> img_col_major, ArrayRef<u8> mask_col_major,
+                                        usize height, usize width, MutArrayRef<f64> out_col_major,
+                                        Allocator* alloc = nullptr);
+
+// Scanline even-odd polygon-to-mask rasterizer (1-based vertex coordinates).
+[[nodiscard]] ImageStatus poly2mask_2d(ArrayRef<f64> vx_1based, ArrayRef<f64> vy_1based,
+                                       usize height, usize width, MutArrayRef<u8> out_bw_col_major,
+                                       Allocator* alloc = nullptr);
+
+// Gray-weighted and binary geodesic distance transforms (Dijkstra).
+[[nodiscard]] ImageStatus graydist_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                      ArrayRef<usize> seed_indices_0based, GeodesicMetric metric,
+                                      MutArrayRef<f64> out_dist_col_major,
+                                      Allocator* alloc = nullptr);
+[[nodiscard]] ImageStatus bwdistgeodesic_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
+                                            ArrayRef<usize> seed_indices_0based,
+                                            GeodesicMetric metric,
+                                            MutArrayRef<f64> out_dist_col_major,
+                                            Allocator* alloc = nullptr);
+
+// Ramer-Douglas-Peucker polyline simplification (returns kept 0-based vertex indices).
+[[nodiscard]] ImageStatus reducepoly_f64(ArrayRef<f64> xs, ArrayRef<f64> ys, f64 tolerance,
+                                         Array<i32>& out_kept_indices);
+[[nodiscard]] ImageStatus reducepoly_f32(ArrayRef<f32> xs, ArrayRef<f32> ys, f64 tolerance,
+                                         Array<i32>& out_kept_indices);
+
+// 2D Meyer watershed transform (0 = ridge line, 1..num_basins_out = catchment basins).
+[[nodiscard]] ImageStatus watershed_2d(ArrayRef<f64> img_col_major, usize height, usize width,
+                                       i32 conn, MutArrayRef<u32> out_labels_col_major,
+                                       u32& num_basins_out, Allocator* alloc = nullptr);
 
 } // namespace keel::image

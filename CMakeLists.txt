@@ -60,6 +60,10 @@ add_library(keel_image STATIC
     src/contrast.cpp
     src/morph.cpp
     src/filter.cpp
+    src/transform.cpp
+    src/region.cpp
+    src/features.cpp
+    src/segment.cpp
 )
 add_library(keel::image ALIAS keel_image)
 

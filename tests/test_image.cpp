@@ -605,6 +605,323 @@ void test_filter() {
     CHECK(est_dos > 0.0);
 }
 
+void test_transform() {
+    // 1. dct_matrix orthogonality + dct_2d/idct_2d round-trip
+    keel::Array<f64> d4(16, 0.0);
+    CHECK(im::dct_matrix(4, d4.as_mut_ref()) == im::ImageStatus::kOk);
+    // D * D^T == I
+    for (usize r = 0; r < 4; ++r) {
+        for (usize c = 0; c < 4; ++c) {
+            f64 dot = 0.0;
+            for (usize k = 0; k < 4; ++k) {
+                dot += d4[k * 4 + r] * d4[k * 4 + c];
+            }
+            CHECK_NEAR(dot, (r == c) ? 1.0 : 0.0, 1e-12);
+        }
+    }
+
+    keel::Array<f64> mat(4 * 5, 0.0), fwd(4 * 5, 0.0), inv(4 * 5, 0.0);
+    for (usize i = 0; i < 20; ++i) mat[i] = keel::as<f64>(i + 1) * 0.5;
+    CHECK(im::dct_2d(mat.as_ref(), 4, 5, fwd.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(im::idct_2d(fwd.as_ref(), 4, 5, inv.as_mut_ref()) == im::ImageStatus::kOk);
+    for (usize i = 0; i < 20; ++i) {
+        CHECK_NEAR(inv[i], mat[i], 1e-12);
+    }
+
+    // 2. integral_image_2d & integral_image_3d
+    const f64 ones2d[6] = {1, 2, 3, 4, 5, 6}; // 2x3 col-major
+    keel::Array<f64> sat2(3 * 4, 0.0);
+    CHECK(im::integral_image_2d(ones2d, 2, 3, sat2.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(sat2[3 * 3 + 2], 21.0, 1e-12);
+
+    keel::Array<f64> ones3d(2 * 2 * 2, 1.0), sat3(3 * 3 * 3, 0.0);
+    CHECK(im::integral_image_3d(ones3d.as_ref(), 2, 2, 2, sat3.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(sat3[2 * 9 + 2 * 3 + 2], 8.0, 1e-12);
+
+    // 3. phantom & checkerboard
+    keel::Array<f64> ell(60, 0.0);
+    CHECK(im::phantom_ellipses(im::PhantomModel::kModifiedSheppLogan, ell.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    keel::Array<f64> ph(32 * 32, 0.0);
+    CHECK(im::phantom_from_ellipses(ell.as_ref(), 10, 32, ph.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(ph[16 * 32 + 16] > 0.0);
+
+    keel::Array<f64> cb(16 * 16, 0.0);
+    CHECK(im::checkerboard(2, 4, 4, cb.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(cb[0], 0.0, 1e-12);
+    CHECK_NEAR(cb[2 * 16 + 0], 1.0, 1e-12);
+    CHECK_NEAR(cb[10 * 16 + 0], 0.7, 1e-12);
+
+    // 4. psf_to_otf / otf_to_psf round-trip
+    const f64 psf[9] = {0.0, 0.1, 0.0, 0.1, 0.6, 0.1, 0.0, 0.1, 0.0};
+    keel::Array<keel::c64> otf(8 * 8, keel::c64{0.0, 0.0});
+    CHECK(im::psf_to_otf(psf, 3, 3, 8, 8, otf.as_mut_ref()) == im::ImageStatus::kOk);
+    keel::Array<keel::c64> psf_back(3 * 3, keel::c64{0.0, 0.0});
+    CHECK(im::otf_to_psf(otf.as_ref(), 8, 8, 3, 3, psf_back.as_mut_ref()) == im::ImageStatus::kOk);
+    for (usize i = 0; i < 9; ++i) {
+        CHECK_NEAR(psf_back[i].re, psf[i], 1e-12);
+        CHECK_NEAR(psf_back[i].im, 0.0, 1e-12);
+    }
+
+    // 5. normxcorr2 exact peak at embedded template location
+    keel::Array<f64> tmpl(3 * 3, 0.0);
+    for (usize i = 0; i < 9; ++i) tmpl[i] = keel::as<f64>((i * 7 + 3) % 11);
+    keel::Array<f64> big(8 * 8, 1.0);
+    for (usize c = 0; c < 3; ++c) {
+        for (usize r = 0; r < 3; ++r) {
+            big[(c + 2) * 8 + (r + 3)] = tmpl[c * 3 + r];
+        }
+    }
+    keel::Array<f64> ncc(10 * 10, 0.0);
+    CHECK(im::normxcorr2(tmpl.as_ref(), 3, 3, big.as_ref(), 8, 8, ncc.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(ncc[(2 + 2) * 10 + (3 + 2)], 1.0, 1e-11);
+
+    // 6. deconvwnr_2d, edgetaper_2d, deconvreg_2d
+    keel::Array<f64> img(16 * 16, 0.0), out(16 * 16, 0.0);
+    for (usize c = 0; c < 16; ++c) {
+        for (usize r = 0; r < 16; ++r) {
+            img[c * 16 + r] = ((r >= 4 && r <= 11 && c >= 4 && c <= 11) ? 1.0 : 0.1);
+        }
+    }
+    const f64 nsr[1] = {0.01};
+    const f64 sx1[1] = {1.0};
+    CHECK(im::deconvwnr_2d(img.as_ref(), 16, 16, psf, 3, 3, nsr, sx1, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK(out[8 * 16 + 8] > 0.5);
+
+    CHECK(im::edgetaper_2d(img.as_ref(), 16, 16, psf, 3, 3, out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(out[8 * 16 + 8], 1.0, 1e-10);
+
+    f64 lam_out = 0.0;
+    CHECK(im::deconvreg_2d(img.as_ref(), 16, 16, psf, 3, 3, 0.05, 1e-6, 1.0,
+                           keel::ArrayRef<f64>{}, 0, 0, out.as_mut_ref(), lam_out) ==
+          im::ImageStatus::kOk);
+    CHECK(lam_out >= 1e-6 && lam_out <= 1.0);
+    CHECK(out[8 * 16 + 8] > 0.5);
+}
+
+void test_region() {
+    // 6x6 image with a 3x3 square (rows 1..3, cols 1..3) and a 1x1 pixel at (5,5)
+    keel::Array<u8> bw(36, u8{0});
+    for (usize c = 1; c <= 3; ++c) {
+        for (usize r = 1; r <= 3; ++r) {
+            bw[c * 6 + r] = 1;
+        }
+    }
+    bw[5 * 6 + 5] = 1;
+
+    keel::Array<i32> labels(36, 0);
+    i32 num_k = 0;
+    CHECK(im::bwlabel_2d(bw.as_ref(), 6, 6, 8, labels.as_mut_ref(), num_k) == im::ImageStatus::kOk);
+    CHECK(num_k == 2);
+
+    keel::Array<u8> opened(36, u8{0});
+    CHECK(im::bwareaopen_2d(bw.as_ref(), 6, 6, 2, 8, opened.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(opened[2 * 6 + 2] == 1);
+    CHECK(opened[5 * 6 + 5] == 0);
+
+    keel::Array<u8> perim(36, u8{0});
+    CHECK(im::bwperim_2d(bw.as_ref(), 6, 6, 4, perim.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(perim[2 * 6 + 2] == 0);
+    CHECK(perim[1 * 6 + 1] == 1);
+
+    f64 euler = 0.0;
+    CHECK(im::bweuler_2d(bw.as_ref(), 6, 6, 8, euler) == im::ImageStatus::kOk);
+    CHECK_NEAR(euler, 2.0, 1e-12);
+
+    keel::Array<f64> dist(36, 0.0);
+    CHECK(im::bwdist_euclidean_2d(bw.as_ref(), 6, 6, dist.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(dist[0], keel::sqrt(2.0), 1e-12);
+    CHECK_NEAR(dist[1 * 6 + 1], 0.0, 1e-12);
+
+    keel::Array<im::BoundaryPoint> bpts;
+    keel::Array<usize> boff;
+    CHECK(im::bwboundaries_2d(bw.as_ref(), 6, 6, 8, labels.as_mut_ref(), num_k, bpts, boff) ==
+          im::ImageStatus::kOk);
+    CHECK(num_k == 2);
+    CHECK(boff.size() == 3);
+    CHECK(boff[1] - boff[0] == 9); // 8 boundary pixels + closing point
+    CHECK(boff[2] - boff[1] == 1); // single-pixel component
+
+    keel::Array<im::RegionProps2D> props;
+    CHECK(im::region_props_2d(labels.as_ref(), 6, 6, num_k,
+                              im::kRegionPropEllipse | im::kRegionPropPerimeter, props) ==
+          im::ImageStatus::kOk);
+    CHECK(props.size() == 2);
+    CHECK(props[0].area == 9);
+    CHECK_NEAR(props[0].centroid_x, 2.0, 1e-12);
+    CHECK_NEAR(props[0].centroid_y, 2.0, 1e-12);
+    CHECK_NEAR(props[0].extent, 1.0, 1e-12);
+    CHECK(props[0].perimeter > 7.0);
+
+    // Component attributes (ConvexArea, Solidity, FilledArea)
+    const i32 prs[9] = {1, 2, 3, 1, 2, 3, 1, 2, 3};
+    const i32 pcs[9] = {1, 1, 1, 2, 2, 2, 3, 3, 3};
+    const usize offs[2] = {0, 9};
+    f64 attr_out[1] = {0.0};
+    CHECK(im::region_component_attrs(prs, pcs, offs, 6, 6, 8, im::RegionAttr::kConvexArea,
+                                     keel::ArrayRef<f64>{}, attr_out) == im::ImageStatus::kOk);
+    CHECK_NEAR(attr_out[0], 9.0, 1e-12);
+    CHECK(im::region_component_attrs(prs, pcs, offs, 6, 6, 8, im::RegionAttr::kSolidity,
+                                     keel::ArrayRef<f64>{}, attr_out) == im::ImageStatus::kOk);
+    CHECK_NEAR(attr_out[0], 1.0, 1e-12);
+
+    // Freeman chain code on a 2x2 closed loop
+    const f64 fr[4] = {1.0, 1.0, 2.0, 2.0};
+    const f64 fc[4] = {1.0, 2.0, 2.0, 1.0};
+    keel::Array<f64> fcc, fdiff;
+    CHECK(im::freeman_chain_code(fr, fc, fcc, fdiff) == im::ImageStatus::kOk);
+    CHECK(fcc.size() == 4);
+    CHECK_NEAR(fcc[0], 0.0, 1e-12);
+    CHECK_NEAR(fcc[1], 6.0, 1e-12);
+}
+
+void test_features_and_segment() {
+    // 1. 2D gradient + edge (Sobel & Canny) + cornermetric + corner_peaks
+    keel::Array<f64> img(16 * 16, 0.0);
+    for (usize c = 4; c <= 11; ++c) {
+        for (usize r = 4; r <= 11; ++r) {
+            img[c * 16 + r] = 1.0;
+        }
+    }
+    keel::Array<f64> gx(16 * 16, 0.0), gy(16 * 16, 0.0);
+    CHECK(im::imgradientxy_2d(img.as_ref(), 16, 16, im::GradientMethod::kSobel, gx.as_mut_ref(),
+                              gy.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(gx[4 * 16 + 8] > 0.0);
+    CHECK(gy[8 * 16 + 4] > 0.0);
+
+    keel::Array<u8> edges(16 * 16, u8{0});
+    CHECK(im::edge_2d(img.as_ref(), 16, 16, im::EdgeMethod::kCanny, keel::kNaN,
+                      edges.as_mut_ref()) == im::ImageStatus::kOk);
+    usize edge_cnt = 0;
+    for (usize i = 0; i < edges.size(); ++i) edge_cnt += edges[i];
+    CHECK(edge_cnt > 10);
+
+    keel::Array<f64> cm(16 * 16, 0.0);
+    CHECK(im::cornermetric_2d(img.as_ref(), 16, 16, im::CornerMethod::kHarris, 0.04,
+                              keel::ArrayRef<f64>{}, cm.as_mut_ref()) == im::ImageStatus::kOk);
+    keel::Array<im::BoundaryPoint> cpeaks;
+    CHECK(im::corner_peaks_2d(cm.as_ref(), 16, 16, 10, 0.01, cpeaks) == im::ImageStatus::kOk);
+    CHECK(cpeaks.size() >= 4);
+
+    // 2. Hough line detection on a horizontal line
+    keel::Array<u8> line_bw(20 * 20, u8{0});
+    for (usize c = 2; c <= 17; ++c) line_bw[c * 20 + 10] = 1;
+    keel::Array<f64> thetas;
+    for (i32 t = -90; t <= 89; ++t) thetas.push_back(keel::as<f64>(t));
+    keel::Array<f64> h_acc, rho;
+    CHECK(im::hough_2d(line_bw.as_ref(), 20, 20, 1.0, thetas.as_ref(), h_acc, rho) ==
+          im::ImageStatus::kOk);
+    keel::Array<im::BoundaryPoint> hpeaks;
+    CHECK(im::houghpeaks_2d(h_acc.as_ref(), rho.size(), thetas.size(), 1, -1.0, 0, 0,
+                            thetas.as_ref(), hpeaks) == im::ImageStatus::kOk);
+    CHECK(hpeaks.size() == 1);
+    keel::Array<im::HoughLine> hlines;
+    CHECK(im::houghlines_2d(line_bw.as_ref(), 20, 20, thetas.as_ref(), rho.as_ref(),
+                            hpeaks.as_ref(), 5.0, 5.0, hlines) == im::ImageStatus::kOk);
+    CHECK(hlines.size() == 1);
+
+    // 3. imfindcircles_2d on a Gaussian-smoothed bright disk of radius 15 centered at (29, 24)
+    keel::Array<f64> circ_raw(60 * 60, 0.0), circ(60 * 60, 0.0);
+    for (usize c = 0; c < 60; ++c) {
+        for (usize r = 0; r < 60; ++r) {
+            const f64 dx = keel::as<f64>(c) - 29.0;
+            const f64 dy = keel::as<f64>(r) - 24.0;
+            if (dx * dx + dy * dy <= 225.0) circ_raw[c * 60 + r] = 1.0;
+        }
+    }
+    im::Kernel2D gk;
+    CHECK(im::fspecial_gaussian(5, 5, 1.5, gk) == im::ImageStatus::kOk);
+    CHECK(im::imfilter_2d(circ_raw.as_ref(), 60, 60, gk.data_col_major.as_ref(), 5, 5,
+                          im::PadMode::kReplicate, 0.0, false, false, circ.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    keel::Array<im::CircleDetection> circles;
+    CHECK(im::imfindcircles_2d(circ.as_ref(), 60, 60, 10.0, 20.0, im::CirclePolarity::kBright,
+                               im::CircleMethod::kPhaseCode, 0.85, -1.0, false, circles) ==
+          im::ImageStatus::kOk);
+    CHECK(circles.size() == 1);
+    if (!circles.empty()) {
+        CHECK_NEAR(circles[0].center_x, 29.0, 0.5);
+        CHECK_NEAR(circles[0].center_y, 24.0, 0.5);
+        CHECK_NEAR(circles[0].radius, 15.0, 0.5);
+    }
+
+    // 4. Segmentation: dice/jaccard, regionfill, poly2mask, graydist, reducepoly, watershed
+    const u8 ma[4] = {1, 1, 0, 0};
+    const u8 mb[4] = {1, 0, 1, 0};
+    CHECK_NEAR(im::dice_coeff(ma, mb), 0.5, 1e-12);
+    CHECK_NEAR(im::jaccard_index(ma, mb), 1.0 / 3.0, 1e-12);
+
+    keel::Array<f64> hole_img(5 * 5, 10.0), hole_out(5 * 5, 0.0);
+    hole_img[2 * 5 + 2] = 0.0;
+    keel::Array<u8> hole_mask(5 * 5, u8{0});
+    hole_mask[2 * 5 + 2] = 1;
+    CHECK(im::regionfill_2d(hole_img.as_ref(), hole_mask.as_ref(), 5, 5, hole_out.as_mut_ref()) ==
+          im::ImageStatus::kOk);
+    CHECK_NEAR(hole_out[2 * 5 + 2], 10.0, 1e-10);
+
+    const f64 px[4] = {2.0, 5.0, 5.0, 2.0};
+    const f64 py[4] = {2.0, 2.0, 5.0, 5.0};
+    keel::Array<u8> pmask(6 * 6, u8{0});
+    CHECK(im::poly2mask_2d(px, py, 6, 6, pmask.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK(pmask[3 * 6 + 3] == 1);
+    CHECK(pmask[0] == 0);
+
+    keel::Array<f64> gimg(5 * 5, 1.0), gdist(5 * 5, 0.0);
+    const usize seeds[1] = {0};
+    CHECK(im::graydist_2d(gimg.as_ref(), 5, 5, seeds, im::GeodesicMetric::kCityblock,
+                          gdist.as_mut_ref()) == im::ImageStatus::kOk);
+    CHECK_NEAR(gdist[4 * 5 + 4], 8.0, 1e-12);
+
+    const f64 rpx[5] = {0.0, 1.0, 2.0, 3.0, 4.0};
+    const f64 rpy[5] = {0.0, 0.01, 0.0, -0.01, 0.0};
+    keel::Array<i32> kept;
+    CHECK(im::reducepoly_f64(rpx, rpy, 0.05, kept) == im::ImageStatus::kOk);
+    CHECK(kept.size() == 2);
+
+    keel::Array<f64> ws_in(7 * 7, 10.0);
+    ws_in[1 * 7 + 3] = 0.0;
+    ws_in[5 * 7 + 3] = 0.0;
+    keel::Array<u32> ws_lab(7 * 7, u32{0});
+    u32 nbasins = 0;
+    CHECK(im::watershed_2d(ws_in.as_ref(), 7, 7, 8, ws_lab.as_mut_ref(), nbasins) ==
+          im::ImageStatus::kOk);
+    CHECK(nbasins == 2);
+
+    // 5. Wide-RGB BT.2020 / BT.2100 + palette helpers
+    const u16 wr[2] = {64, 940};
+    const u16 wg[2] = {64, 500};
+    const u16 wb[2] = {64, 200};
+    u16 wy[2] = {}, wcb[2] = {}, wcr[2] = {}, rr[2] = {}, rg[2] = {}, rb[2] = {};
+    CHECK(im::rgbwide_to_ycbcr_planar(wr, wg, wb, 10, wy, wcb, wcr) == im::ImageStatus::kOk);
+    CHECK(im::ycbcr_to_rgbwide_planar(wy, wcb, wcr, 10, rr, rg, rb) == im::ImageStatus::kOk);
+    CHECK(rr[0] == 64 && rg[0] == 64 && rb[0] == 64);
+    CHECK(keel::abs(keel::as<i32>(rr[1]) - 940) <= 2);
+
+    const f64 wrd[2] = {64.0, 940.0};
+    const f64 wgd[2] = {64.0, 500.0};
+    const f64 wbd[2] = {64.0, 200.0};
+    f64 wx[2] = {}, wy2[2] = {}, wz[2] = {};
+    CHECK(im::rgbwide_to_xyz_planar(wrd, wgd, wbd, 10, im::WideColorSpace::kBt2020, wx, wy2, wz) ==
+          im::ImageStatus::kOk);
+    CHECK(im::xyz_to_rgbwide_planar(wx, wy2, wz, 10, im::WideColorSpace::kBt2020, rr, rg, rb) ==
+          im::ImageStatus::kOk);
+    CHECK(rr[0] == 64 && rr[1] == 940 && rg[1] == 500 && rb[1] == 200);
+
+    const f64 cmr[3] = {1.0, 0.0, 1.0};
+    const f64 cmg[3] = {0.0, 1.0, 0.0};
+    const f64 cmb[3] = {0.0, 0.0, 0.0};
+    const usize idx_in[3] = {0, 1, 2};
+    usize idx_out[3] = {};
+    keel::Array<f64> ur, ug, ub;
+    CHECK(im::colormap_unique(idx_in, cmr, cmg, cmb, idx_out, ur, ug, ub) == im::ImageStatus::kOk);
+    CHECK(ur.size() == 2);
+    CHECK(idx_out[0] == idx_out[2]);
+}
+
 } // namespace
 
 int main() {
@@ -617,6 +934,9 @@ int main() {
     test_contrast();
     test_morph();
     test_filter();
+    test_transform();
+    test_region();
+    test_features_and_segment();
 
     if (g_failures == 0) {
         std::printf("ALL keel::image TESTS PASSED\n");
