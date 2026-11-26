@@ -368,9 +368,9 @@ ImageStatus gradientweight_2d(ArrayRef<f64> img_col_major, usize height, usize w
     };
 
     const i32 rx = as<i32>(ceil(2.0 * sigma_x));
-    const i32 ry = as<i32>(ceil(2.0 * sigma_y));
     Array<f64> hx = build_dog(sigma_x, rx);
-    Array<f64> hy = build_dog(sigma_y, ry);
+    // Match reference engine convention: hy normalises using filtRadius(1) (rx).
+    Array<f64> hy = build_dog(sigma_y, rx);
 
     Array<f64> gx(a);
     gx.resize(total);
