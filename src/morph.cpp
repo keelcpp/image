@@ -150,6 +150,14 @@ ImageStatus morph_flat_u8_impl(ArrayRef<u8> src_col_major, usize height, usize w
     u8* dst = dst_col_major.data();
 
     ArenaTemp scratch = get_scratch(alloc);
+    Array<u8> src_copy(scratch.allocator());
+    if (src == dst) {
+        src_copy.resize(n);
+        for (usize i = 0; i < n; ++i) {
+            src_copy[i] = src[i];
+        }
+        src = src_copy.data();
+    }
 
     if (van_herk_eligible(se_col_major, sh, sw, half_r, half_c)) {
         const u8 init_val = IsErode ? u8{255} : u8{0};
@@ -348,7 +356,9 @@ ImageStatus morph_flat_f64_impl(ArrayRef<f64> src_col_major, usize height, usize
 
     for (i32 oc = 0; oc < w; ++oc) {
         for (i32 orow = 0; orow < h; ++orow) {
-            f64 best = qnan;
+            f64 best = 0.0;
+            bool covered = false;
+            bool any_nan = false;
             for (i32 kj = 0; kj < sw; ++kj) {
                 const i32 c_in = oc + kj - half_c;
                 if (c_in < 0 || c_in >= w) {
@@ -363,8 +373,13 @@ ImageStatus morph_flat_f64_impl(ArrayRef<f64> src_col_major, usize height, usize
                         continue;
                     }
                     const f64 v = src_col_major[as<usize>(c_in) * height + as<usize>(r_in)];
-                    if (is_nan(best)) {
+                    if (is_nan(v)) {
+                        any_nan = true;
+                        continue;
+                    }
+                    if (!covered) {
                         best = v;
+                        covered = true;
                     } else if constexpr (IsErode) {
                         if (v < best) {
                             best = v;
@@ -376,10 +391,8 @@ ImageStatus morph_flat_f64_impl(ArrayRef<f64> src_col_major, usize height, usize
                     }
                 }
             }
-            if (is_nan(best)) {
-                best = 0.0;
-            }
-            dst_col_major[as<usize>(oc) * height + as<usize>(orow)] = best;
+            dst_col_major[as<usize>(oc) * height + as<usize>(orow)] =
+                covered ? best : (any_nan ? qnan : 0.0);
         }
     }
     return ImageStatus::kOk;
@@ -740,6 +753,9 @@ ImageStatus strel_diamond(i32 radius, StrelMask& out, Allocator* alloc) {
 }
 
 ImageStatus strel_disk(f64 radius, i32 n_periodic, StrelMask& out, Allocator* alloc) {
+    if (!is_finite(radius) || radius > 1e5) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (radius < 1.0) {
         radius = 1.0;
     }
@@ -812,6 +828,9 @@ ImageStatus strel_disk(f64 radius, i32 n_periodic, StrelMask& out, Allocator* al
 }
 
 ImageStatus strel_line(f64 length, f64 theta_deg, StrelMask& out, Allocator* alloc) {
+    if (!is_finite(length) || !is_finite(theta_deg) || length > 1e5) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (length < 1.0) {
         length = 1.0;
     }
@@ -880,9 +899,25 @@ ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major, ArrayRef<f64> mask
     if (conn != 4) {
         conn = 8;
     }
+    for (usize i = 0; i < n; ++i) {
+        if (is_nan(marker_col_major[i]) || is_nan(mask_col_major[i])) {
+            return ImageStatus::kInvalidArgument;
+        }
+    }
+
+    ArenaTemp scratch = get_scratch(alloc);
+    Array<f64> mask_copy(scratch.allocator());
+    ArrayRef<f64> mask_ref = mask_col_major;
+    if (out_col_major.data() == mask_col_major.data()) {
+        mask_copy.resize(n);
+        for (usize i = 0; i < n; ++i) {
+            mask_copy[i] = mask_col_major[i];
+        }
+        mask_ref = mask_copy.as_ref();
+    }
 
     for (usize i = 0; i < n; ++i) {
-        out_col_major[i] = min(marker_col_major[i], mask_col_major[i]);
+        out_col_major[i] = min(marker_col_major[i], mask_ref[i]);
     }
 
     struct Off {
@@ -917,11 +952,10 @@ ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major, ArrayRef<f64> mask
                 m = out_col_major[q];
             }
         }
-        out_col_major[i] = min(m, mask_col_major[i]);
+        out_col_major[i] = min(m, mask_ref[i]);
     }
 
     // Anti-raster pass (anti-causal neighbors with q > i) + FIFO seeding.
-    ArenaTemp scratch = get_scratch(alloc);
     Array<usize> fifo(scratch.allocator());
     fifo.reserve(n);
     for (usize ii = n; ii-- > 0;) {
@@ -940,7 +974,7 @@ ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major, ArrayRef<f64> mask
                 m = out_col_major[q];
             }
         }
-        out_col_major[i] = min(m, mask_col_major[i]);
+        out_col_major[i] = min(m, mask_ref[i]);
         for (i32 k = 0; k < nnb; ++k) {
             const i32 nr = r + nbr[k].dr;
             const i32 nc = c + nbr[k].dc;
@@ -949,7 +983,7 @@ ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major, ArrayRef<f64> mask
             }
             const usize q = idx_of(nr, nc);
             if (q > i && out_col_major[q] < out_col_major[i] &&
-                out_col_major[q] < mask_col_major[q]) {
+                out_col_major[q] < mask_ref[q]) {
                 fifo.push_back(i);
                 break;
             }
@@ -970,8 +1004,8 @@ ImageStatus imreconstruct_f64(ArrayRef<f64> marker_col_major, ArrayRef<f64> mask
                 continue;
             }
             const usize q = idx_of(nr, nc);
-            if (out_col_major[q] < jp && out_col_major[q] < mask_col_major[q]) {
-                out_col_major[q] = min(jp, mask_col_major[q]);
+            if (out_col_major[q] < jp && out_col_major[q] < mask_ref[q]) {
+                out_col_major[q] = min(jp, mask_ref[q]);
                 fifo.push_back(q);
             }
         }
@@ -1023,17 +1057,6 @@ ImageStatus imfill_holes_gray(ArrayRef<f64> img_col_major, usize height, usize w
         return ImageStatus::kOk;
     }
     const f64 neg_inf = -Limits<f64>::infinity();
-    f64 max_i = neg_inf;
-    for (usize i = 0; i < n; ++i) {
-        const f64 v = img_col_major[i];
-        if (is_finite(v) && v > max_i) {
-            max_i = v;
-        }
-    }
-    if (!is_finite(max_i)) {
-        max_i = 0.0;
-    }
-
     ArenaTemp scratch = get_scratch(alloc);
     Array<f64> marker(n, scratch.allocator());
     Array<f64> mask(n, scratch.allocator());
@@ -1041,7 +1064,7 @@ ImageStatus imfill_holes_gray(ArrayRef<f64> img_col_major, usize height, usize w
     for (usize c = 0; c < width; ++c) {
         for (usize r = 0; r < height; ++r) {
             const usize idx = c * height + r;
-            const f64 ic = max_i - img_col_major[idx];
+            const f64 ic = -img_col_major[idx];
             mask[idx] = ic;
             const bool on_rim = (r == 0 || c == 0 || r + 1 == height || c + 1 == width);
             marker[idx] = on_rim ? ic : neg_inf;
@@ -1053,7 +1076,7 @@ ImageStatus imfill_holes_gray(ArrayRef<f64> img_col_major, usize height, usize w
         return st;
     }
     for (usize i = 0; i < n; ++i) {
-        out_col_major[i] = max_i - recon[i];
+        out_col_major[i] = -recon[i];
     }
     return ImageStatus::kOk;
 }
@@ -1067,33 +1090,70 @@ ImageStatus imregionalmax_2d(ArrayRef<f64> img_col_major, usize height, usize wi
     if (n == 0) {
         return ImageStatus::kOk;
     }
-
-    const f64 pos_inf = Limits<f64>::infinity();
-    f64 max_fin = -pos_inf;
-    for (usize i = 0; i < n; ++i) {
-        const f64 v = img_col_major[i];
-        if (is_finite(v) && v > max_fin) {
-            max_fin = v;
-        }
+    if (conn != 4) {
+        conn = 8;
     }
-    if (!is_finite(max_fin)) {
-        max_fin = 0.0;
-    }
+    static constexpr i32 kDr8[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    static constexpr i32 kDc8[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    static constexpr i32 kDr4[4] = {-1, 0, 0, 1};
+    static constexpr i32 kDc4[4] = {0, -1, 1, 0};
+    const i32* dr = (conn == 4) ? kDr4 : kDr8;
+    const i32* dc = (conn == 4) ? kDc4 : kDc8;
+    const i32 nnb = (conn == 4) ? 4 : 8;
+    const i32 hi = as<i32>(height);
+    const i32 wi = as<i32>(width);
 
     ArenaTemp scratch = get_scratch(alloc);
-    Array<f64> marker(n, scratch.allocator());
-    Array<f64> recon(n, scratch.allocator());
+    Array<u8> visited(n, u8{0}, scratch.allocator());
+    Array<usize> comp(scratch.allocator());
+    Array<usize> q(scratch.allocator());
+    comp.reserve(64);
+    q.reserve(64);
+
     for (usize i = 0; i < n; ++i) {
-        const f64 v = img_col_major[i];
-        marker[i] = (v == pos_inf) ? max_fin : (v - 1.0);
-    }
-    const ImageStatus st =
-        imreconstruct_f64(marker, img_col_major, height, width, conn, recon, scratch.allocator());
-    if (st != ImageStatus::kOk) {
-        return st;
+        out_col_major[i] = 0;
     }
     for (usize i = 0; i < n; ++i) {
-        out_col_major[i] = (img_col_major[i] > recon[i]) ? u8{1} : u8{0};
+        if (visited[i] != 0) {
+            continue;
+        }
+        visited[i] = 1;
+        const f64 v0 = img_col_major[i];
+        if (is_nan(v0)) {
+            continue;
+        }
+        comp.clear();
+        q.clear();
+        comp.push_back(i);
+        q.push_back(i);
+        bool has_higher = false;
+        usize head = 0;
+        while (head < q.size()) {
+            const usize curr = q[head++];
+            const i32 r = as<i32>(curr % height);
+            const i32 c = as<i32>(curr / height);
+            for (i32 k = 0; k < nnb; ++k) {
+                const i32 nr = r + dr[k];
+                const i32 nc = c + dc[k];
+                if (nr < 0 || nr >= hi || nc < 0 || nc >= wi) {
+                    continue;
+                }
+                const usize nb = as<usize>(nc) * height + as<usize>(nr);
+                const f64 vn = img_col_major[nb];
+                if (vn > v0) {
+                    has_higher = true;
+                } else if (vn == v0 && visited[nb] == 0) {
+                    visited[nb] = 1;
+                    comp.push_back(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        if (!has_higher) {
+            for (usize j = 0; j < comp.size(); ++j) {
+                out_col_major[comp[j]] = 1;
+            }
+        }
     }
     return ImageStatus::kOk;
 }
@@ -1107,16 +1167,10 @@ ImageStatus imregionalmin_2d(ArrayRef<f64> img_col_major, usize height, usize wi
     if (n == 0) {
         return ImageStatus::kOk;
     }
-    f64 high = 0.0;
-    for (usize i = 0; i < n; ++i) {
-        if (img_col_major[i] > high) {
-            high = img_col_major[i];
-        }
-    }
     ArenaTemp scratch = get_scratch(alloc);
     Array<f64> inv(n, scratch.allocator());
     for (usize i = 0; i < n; ++i) {
-        inv[i] = high - img_col_major[i];
+        inv[i] = -img_col_major[i];
     }
     return imregionalmax_2d(inv, height, width, conn, out_col_major, scratch.allocator());
 }
@@ -1124,7 +1178,7 @@ ImageStatus imregionalmin_2d(ArrayRef<f64> img_col_major, usize height, usize wi
 ImageStatus imhmax_2d(ArrayRef<f64> img_col_major, usize height, usize width, f64 h, i32 conn,
                       MutArrayRef<f64> out_col_major, Allocator* alloc) {
     const usize n = height * width;
-    if (img_col_major.size() < n || out_col_major.size() < n || !(h >= 0.0)) {
+    if (img_col_major.size() < n || out_col_major.size() < n || !is_finite(h) || !(h >= 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
@@ -1142,30 +1196,24 @@ ImageStatus imhmax_2d(ArrayRef<f64> img_col_major, usize height, usize width, f6
 ImageStatus imhmin_2d(ArrayRef<f64> img_col_major, usize height, usize width, f64 h, i32 conn,
                       MutArrayRef<f64> out_col_major, Allocator* alloc) {
     const usize n = height * width;
-    if (img_col_major.size() < n || out_col_major.size() < n || !(h >= 0.0)) {
+    if (img_col_major.size() < n || out_col_major.size() < n || !is_finite(h) || !(h >= 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
         return ImageStatus::kOk;
     }
-    f64 high = 0.0;
-    for (usize i = 0; i < n; ++i) {
-        if (img_col_major[i] > high) {
-            high = img_col_major[i];
-        }
-    }
     ArenaTemp scratch = get_scratch(alloc);
     Array<f64> inv(n, scratch.allocator());
     Array<f64> j_inv(n, scratch.allocator());
     for (usize i = 0; i < n; ++i) {
-        inv[i] = high - img_col_major[i];
+        inv[i] = -img_col_major[i];
     }
     const ImageStatus st = imhmax_2d(inv, height, width, h, conn, j_inv, scratch.allocator());
     if (st != ImageStatus::kOk) {
         return st;
     }
     for (usize i = 0; i < n; ++i) {
-        out_col_major[i] = high - j_inv[i];
+        out_col_major[i] = -j_inv[i];
     }
     return ImageStatus::kOk;
 }

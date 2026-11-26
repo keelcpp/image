@@ -134,9 +134,9 @@ void nth_select_f64(f64* data, usize n, usize k) noexcept {
         usize i = lo;
         usize j = hi - 1;
         for (;;) {
-            while (data[++i] < pivot) {
+            while (++i < hi - 1 && data[i] < pivot) {
             }
-            while (data[--j] > pivot) {
+            while (--j > lo && data[j] > pivot) {
             }
             if (i >= j) {
                 break;
@@ -238,12 +238,22 @@ ImageStatus padarray_f64(ArrayRef<f64> src_col_major, usize height, usize width,
     if (h2 == 0 || w2 == 0 || p2 == 0) {
         return ImageStatus::kOk;
     }
+    if (h == 0 || w == 0 || p == 0) {
+        if (mode != PadMode::kConstant) {
+            return ImageStatus::kInvalidArgument;
+        }
+        const usize out_n = as<usize>(h2) * as<usize>(w2) * as<usize>(p2);
+        for (usize i = 0; i < out_n; ++i) {
+            out_col_major[i] = pad_value;
+        }
+        return ImageStatus::kOk;
+    }
 
     const usize plane = height * width;
     const usize plane2 = as<usize>(h2) * as<usize>(w2);
 
     for (i32 pi = 0; pi < p2; ++pi) {
-        const i32 p_src_raw = (p == 1) ? 0 : (pi - pre_p);
+        const i32 p_src_raw = pi - pre_p;
         for (i32 ci = 0; ci < w2; ++ci) {
             const i32 c_src_raw = ci - pre_c;
             for (i32 ri = 0; ri < h2; ++ri) {
@@ -258,7 +268,7 @@ ImageStatus padarray_f64(ArrayRef<f64> src_col_major, usize height, usize width,
                 } else {
                     const i32 rs = fold_index(r_src_raw, h, mode);
                     const i32 cs = fold_index(c_src_raw, w, mode);
-                    const i32 ps = (p == 1) ? 0 : fold_index(p_src_raw, p, mode);
+                    const i32 ps = fold_index(p_src_raw, p, mode);
                     v = src_col_major[as<usize>(ps) * plane + as<usize>(cs) * height +
                                       as<usize>(rs)];
                 }
@@ -284,7 +294,7 @@ ImageStatus fspecial_average(i32 rows, i32 cols, Kernel2D& out, Allocator* alloc
 }
 
 ImageStatus fspecial_gaussian(i32 rows, i32 cols, f64 sigma, Kernel2D& out, Allocator* alloc) {
-    if (rows <= 0 || cols <= 0 || !(sigma > 0.0)) {
+    if (rows <= 0 || cols <= 0 || !is_finite(sigma) || !(sigma > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize ru = as<usize>(rows);
@@ -315,6 +325,9 @@ ImageStatus fspecial_gaussian(i32 rows, i32 cols, f64 sigma, Kernel2D& out, Allo
 }
 
 ImageStatus fspecial_laplacian(f64 alpha, Kernel2D& out, Allocator* alloc) {
+    if (!is_finite(alpha)) {
+        return ImageStatus::kInvalidArgument;
+    }
     alpha = clamp(alpha, 0.0, 1.0);
     const f64 s = 1.0 / (alpha + 1.0);
     out.rows = 3;
@@ -332,7 +345,7 @@ ImageStatus fspecial_laplacian(f64 alpha, Kernel2D& out, Allocator* alloc) {
 }
 
 ImageStatus fspecial_log(i32 rows, i32 cols, f64 sigma, Kernel2D& out, Allocator* alloc) {
-    if (rows <= 0 || cols <= 0 || !(sigma > 0.0)) {
+    if (rows <= 0 || cols <= 0 || !is_finite(sigma) || !(sigma > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize ru = as<usize>(rows);
@@ -405,7 +418,7 @@ ImageStatus fspecial_prewitt(Kernel2D& out, Allocator* alloc) {
 }
 
 ImageStatus fspecial_disk(f64 radius, Kernel2D& out, Allocator* alloc) {
-    if (!(radius > 0.0)) {
+    if (!is_finite(radius) || !(radius > 0.0) || radius > 1e5) {
         return ImageStatus::kInvalidArgument;
     }
     const i32 crad = as<i32>(ceil(radius - 0.5));
@@ -484,6 +497,9 @@ ImageStatus fspecial_disk(f64 radius, Kernel2D& out, Allocator* alloc) {
 }
 
 ImageStatus fspecial_motion(f64 length, f64 theta_deg, Kernel2D& out, Allocator* alloc) {
+    if (!is_finite(length) || !is_finite(theta_deg) || length > 1e5) {
+        return ImageStatus::kInvalidArgument;
+    }
     constexpr f64 kEps = Limits<f64>::kEpsilon;
     constexpr f64 kLineWdt = 1.0;
     const f64 len = max(1.0, length);
@@ -586,14 +602,17 @@ ImageStatus imfilter_2d(ArrayRef<f64> img_col_major, usize height, usize width,
                         ArrayRef<f64> kernel_col_major, usize k_h, usize k_w, PadMode boundary,
                         f64 pad_value, bool full, bool flip_kernel,
                         MutArrayRef<f64> out_col_major) noexcept {
+    if (k_h == 0 || k_w == 0) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if (height == 0 || width == 0) {
+        return ImageStatus::kOk;
+    }
     const usize out_h = full ? (height + k_h - 1) : height;
     const usize out_w = full ? (width + k_w - 1) : width;
     if (img_col_major.size() < height * width || kernel_col_major.size() < k_h * k_w ||
         out_col_major.size() < out_h * out_w) {
         return ImageStatus::kInvalidArgument;
-    }
-    if (out_h == 0 || out_w == 0) {
-        return ImageStatus::kOk;
     }
 
     const i32 h = as<i32>(height);
@@ -616,17 +635,11 @@ ImageStatus imfilter_2d(ArrayRef<f64> img_col_major, usize height, usize width,
             for (i32 orow = 0; orow < oh; ++orow) {
                 f64 s = 0.0;
                 for (i32 kj = 0; kj < kw; ++kj) {
-                    const i32 c_in = oc - kj;
-                    if (c_in < 0 || c_in >= w) {
-                        continue;
-                    }
+                    const i32 c_in = oc + kj - (kw - 1);
                     for (i32 ki = 0; ki < kh; ++ki) {
-                        const i32 r_in = orow - ki;
-                        if (r_in < 0 || r_in >= h) {
-                            continue;
-                        }
+                        const i32 r_in = orow + ki - (kh - 1);
                         s += get_k(ki, kj) *
-                             img_col_major[as<usize>(c_in) * height + as<usize>(r_in)];
+                             sample_padded_2d(img_col_major, r_in, c_in, h, w, boundary, pad_value);
                     }
                 }
                 out_col_major[as<usize>(oc) * out_h + as<usize>(orow)] = s;
@@ -707,7 +720,8 @@ ImageStatus box_filter_2d_u8_replicate(ArrayRef<u8> in_col_major, usize height, 
     const i32 ws = w + 2 * hk + 1;
 
     ArenaTemp scratch = get_scratch(alloc);
-    if (as<u64>(h) * as<u64>(w) * u64{255} < (u64{1} << 32)) {
+    if (as<u64>(hs) * as<u64>(ws) * u64{255} < (u64{1} << 32) &&
+        as<u64>(k) * as<u64>(k) * u64{511} < (u64{1} << 32)) {
         Array<u32> sat(as<usize>(hs) * as<usize>(ws), u32{0}, scratch.allocator());
         auto q = [&](i32 r, i32 c) noexcept -> u32& {
             return sat[as<usize>(c) * as<usize>(hs) + as<usize>(r)];
@@ -856,13 +870,10 @@ ImageStatus modefilt_u8(ArrayRef<u8> src_col_major, usize height, usize width, u
     const i32 hd = is_3d ? (fd / 2) : 0;
 
     auto reflect = [&](i32 v, i32 n) noexcept -> i32 {
-        if (pad_mode == PadMode::kReplicate) {
-            return clamp(v, 0, n - 1);
-        }
         if (pad_mode == PadMode::kConstant) {
             return (v < 0 || v >= n) ? -1 : v;
         }
-        return fold_index(v, n, PadMode::kSymmetric);
+        return fold_index(v, n, pad_mode);
     };
 
     for (i32 p = 0; p < d; ++p) {
@@ -925,13 +936,10 @@ ImageStatus modefilt_f64(ArrayRef<f64> src_col_major, usize height, usize width,
     const i32 hd = is_3d ? (fd / 2) : 0;
 
     auto reflect = [&](i32 v, i32 n) noexcept -> i32 {
-        if (pad_mode == PadMode::kReplicate) {
-            return clamp(v, 0, n - 1);
-        }
         if (pad_mode == PadMode::kConstant) {
             return (v < 0 || v >= n) ? -1 : v;
         }
-        return fold_index(v, n, PadMode::kSymmetric);
+        return fold_index(v, n, pad_mode);
     };
 
     ArenaTemp scratch = get_scratch(alloc);
@@ -953,12 +961,20 @@ ImageStatus modefilt_f64(ArrayRef<f64> src_col_major, usize height, usize width,
                                     vals.push_back(0.0);
                                 }
                             } else {
-                                vals.push_back(src_col_major[as<usize>(ps) * plane +
-                                                             as<usize>(cs) * height +
-                                                             as<usize>(rs)]);
+                                const f64 val = src_col_major[as<usize>(ps) * plane +
+                                                              as<usize>(cs) * height +
+                                                              as<usize>(rs)];
+                                if (!is_nan(val)) {
+                                    vals.push_back(val);
+                                }
                             }
                         }
                     }
+                }
+                if (vals.empty()) {
+                    out_col_major[as<usize>(p) * plane + as<usize>(c) * height + as<usize>(r)] =
+                        kNaN;
+                    continue;
                 }
                 sort(vals.as_mut_ref());
                 i32 best_cnt = -1;
@@ -1085,6 +1101,15 @@ ImageStatus medfilt2_f64(ArrayRef<f64> src_col_major, usize height, usize width,
         return ImageStatus::kOk;
     }
 
+    ArenaTemp scratch = get_scratch(alloc);
+    Array<f64> src_copy(scratch.allocator());
+    ArrayRef<f64> src = src_col_major;
+    if (out_col_major.data() == src_col_major.data()) {
+        src_copy.resize(n);
+        for (usize i = 0; i < n; ++i) src_copy[i] = src_col_major[i];
+        src = src_copy.as_ref();
+    }
+
     const i32 h = as<i32>(height);
     const i32 w = as<i32>(width);
     if (rows == 3 && cols == 3) {
@@ -1098,7 +1123,7 @@ ImageStatus medfilt2_f64(ArrayRef<f64> src_col_major, usize height, usize width,
                         const i32 c_in = oc + kj - 1;
                         p[m++] = (r_in < 0 || r_in >= h || c_in < 0 || c_in >= w)
                                      ? 0.0
-                                     : src_col_major[as<usize>(c_in) * height + as<usize>(r_in)];
+                                     : src[as<usize>(c_in) * height + as<usize>(r_in)];
                     }
                 }
                 out_col_major[as<usize>(oc) * height + as<usize>(orow)] = med9(p);
@@ -1109,7 +1134,6 @@ ImageStatus medfilt2_f64(ArrayRef<f64> src_col_major, usize height, usize width,
 
     const i32 half_r = rows / 2;
     const i32 half_c = cols / 2;
-    ArenaTemp scratch = get_scratch(alloc);
     Array<f64> window(as<usize>(rows) * as<usize>(cols), 0.0, scratch.allocator());
 
     for (i32 oc = 0; oc < w; ++oc) {
@@ -1122,7 +1146,7 @@ ImageStatus medfilt2_f64(ArrayRef<f64> src_col_major, usize height, usize width,
                     window[idx++] =
                         (r_in < 0 || r_in >= h || c_in < 0 || c_in >= w)
                             ? 0.0
-                            : src_col_major[as<usize>(c_in) * height + as<usize>(r_in)];
+                            : src[as<usize>(c_in) * height + as<usize>(r_in)];
                 }
             }
             out_col_major[as<usize>(oc) * height + as<usize>(orow)] =
@@ -1136,8 +1160,9 @@ ImageStatus imsharpen_2d(ArrayRef<f64> img_col_major, usize height, usize width,
                          f64 amount, f64 threshold, MutArrayRef<f64> out_col_major,
                          Allocator* alloc) {
     const usize n = height * width;
-    if (img_col_major.size() < n || out_col_major.size() < n ||
-        !(threshold >= 0.0 && threshold <= 1.0)) {
+    if (img_col_major.size() < n || out_col_major.size() < n || !is_finite(amount) ||
+        !is_finite(threshold) || !(threshold >= 0.0 && threshold <= 1.0) ||
+        (radius > 0.0 && (!is_finite(radius) || radius > 1e6))) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
@@ -1192,7 +1217,9 @@ ImageStatus imbilatfilt_2d(ArrayRef<f64> img_col_major, usize height, usize widt
                            f64 degree_of_smoothing, f64 spatial_sigma,
                            MutArrayRef<f64> out_col_major, Allocator* alloc) {
     const usize n = height * width;
-    if (img_col_major.size() < n || out_col_major.size() < n || !(degree_of_smoothing > 0.0)) {
+    if (img_col_major.size() < n || out_col_major.size() < n || !is_finite(degree_of_smoothing) ||
+        !(degree_of_smoothing > 0.0) ||
+        (spatial_sigma > 0.0 && (!is_finite(spatial_sigma) || spatial_sigma > 1e6))) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
@@ -1506,7 +1533,8 @@ ImageStatus wiener2_2d(ArrayRef<f64> unit_col_major, usize height, usize width, 
                        f64 noise_in, MutArrayRef<f64> out_col_major, f64& noise_out,
                        Allocator* alloc) {
     const usize n = height * width;
-    if (unit_col_major.size() < n || out_col_major.size() < n) {
+    if (unit_col_major.size() < n || out_col_major.size() < n ||
+        (!is_nan(noise_in) && (!is_finite(noise_in) || noise_in < 0.0))) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
@@ -1560,7 +1588,7 @@ ImageStatus wiener2_2d(ArrayRef<f64> unit_col_major, usize height, usize width, 
             const f64 sum2 = s2(r1, c1) - s2(r0, c1) - s2(r1, c0) + s2(r0, c0);
             const f64 mu = sum1 * inv_area;
             const f64 ms = sum2 * inv_area;
-            const f64 vr = ms - mu * mu;
+            const f64 vr = max(0.0, ms - mu * mu);
             const usize idx = as<usize>(c) * height + as<usize>(r);
             mean_im[idx] = mu;
             var_im[idx] = vr;
@@ -1665,7 +1693,10 @@ ImageStatus imgaussfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize wi
                              f64 sig_h, f64 sig_w, f64 sig_p, MutArrayRef<f64> out_col_major,
                              Allocator* alloc) {
     const usize total = height * width * pages;
-    if (vol_col_major.size() < total || out_col_major.size() < total) {
+    if (vol_col_major.size() < total || out_col_major.size() < total ||
+        (sig_h > 0.0 && (!is_finite(sig_h) || sig_h > 1e6)) ||
+        (sig_w > 0.0 && (!is_finite(sig_w) || sig_w > 1e6)) ||
+        (sig_p > 0.0 && (!is_finite(sig_p) || sig_p > 1e6))) {
         return ImageStatus::kInvalidArgument;
     }
     if (total == 0) {
@@ -1757,6 +1788,13 @@ ImageStatus medfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
     const usize nbhd = as<usize>(m) * as<usize>(n) * as<usize>(p);
 
     ArenaTemp scratch = get_scratch(alloc);
+    Array<f64> src_copy(scratch.allocator());
+    ArrayRef<f64> src = vol_col_major;
+    if (out_col_major.data() == vol_col_major.data()) {
+        src_copy.resize(total);
+        for (usize i = 0; i < total; ++i) src_copy[i] = vol_col_major[i];
+        src = src_copy.as_ref();
+    }
     Array<f64> window(nbhd, 0.0, scratch.allocator());
 
     for (i32 pi = 0; pi < d; ++pi) {
@@ -1769,8 +1807,8 @@ ImageStatus medfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
                         const i32 cs = fold_index(ci + kc, w, PadMode::kSymmetric);
                         for (i32 kr = -hm; kr <= hm; ++kr) {
                             const i32 rs = fold_index(ri + kr, h, PadMode::kSymmetric);
-                            window[idx++] = vol_col_major[as<usize>(ps) * plane +
-                                                          as<usize>(cs) * height + as<usize>(rs)];
+                            window[idx++] =
+                                src[as<usize>(ps) * plane + as<usize>(cs) * height + as<usize>(rs)];
                         }
                     }
                 }
@@ -1784,7 +1822,7 @@ ImageStatus medfilt3_f64(ArrayRef<f64> vol_col_major, usize height, usize width,
 
 ImageStatus convmtx2_f64(ArrayRef<f64> h_col_major, usize h_rows, usize h_cols, usize m, usize n,
                          MutArrayRef<f64> out_col_major) noexcept {
-    if (m == 0 || n == 0 || h_col_major.size() < h_rows * h_cols) {
+    if (h_rows == 0 || h_cols == 0 || m == 0 || n == 0 || h_col_major.size() < h_rows * h_cols) {
         return ImageStatus::kInvalidArgument;
     }
     const usize out_rows = m + h_rows - 1;
@@ -1970,17 +2008,22 @@ ImageStatus imgaborfilt_2d(ArrayRef<f64> img_col_major, usize height, usize widt
                            MutArrayRef<f64> out_mag_col_major,
                            MutArrayRef<f64> out_phase_col_major, Allocator* alloc) {
     const usize n = height * width;
-    if (!(wavelength >= 2.0) || !(sfb > 0.0) || !(aspect > 0.0) || img_col_major.size() < n ||
-        out_mag_col_major.size() < n || out_phase_col_major.size() < n) {
+    if (!is_finite(wavelength) || !(wavelength >= 2.0) || !is_finite(orientation_deg) ||
+        !is_finite(sfb) || !(sfb > 0.0) || !is_finite(aspect) || !(aspect > 0.0) ||
+        img_col_major.size() < n || out_mag_col_major.size() < n ||
+        out_phase_col_major.size() < n) {
         return ImageStatus::kInvalidArgument;
     }
     if (n == 0) {
         return ImageStatus::kOk;
     }
 
-    const f64 sigma_x = wavelength / kPi * sqrt(log(2.0) * 0.5) * (pow(2.0, sfb) + 1.0) /
-                        (pow(2.0, sfb) - 1.0);
+    const f64 ratio = (sfb > 60.0) ? 1.0 : ((pow(2.0, sfb) + 1.0) / (pow(2.0, sfb) - 1.0));
+    const f64 sigma_x = wavelength / kPi * sqrt(log(2.0) * 0.5) * ratio;
     const f64 sigma_y = sigma_x / aspect;
+    if (!is_finite(sigma_x) || !is_finite(sigma_y) || sigma_x > 1e5 || sigma_y > 1e5) {
+        return ImageStatus::kInvalidArgument;
+    }
     const i32 rx = as<i32>(ceil(7.0 * sigma_x));
     const i32 ry = as<i32>(ceil(7.0 * sigma_y));
     const i32 r = max(rx, ry);
@@ -2114,6 +2157,7 @@ ImageStatus imnlmfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
     const usize n = height * width;
     if (height < 21 || width < 21 || swsize < 1 || (swsize & 1) == 0 || cwsize < 1 ||
         (cwsize & 1) == 0 || cwsize > swsize || as<usize>(swsize) > min(height, width) ||
+        is_nan(dos) || (dos >= 0.0 && (!is_finite(dos) || !(dos > 0.0))) ||
         img_col_major.size() < n || out_col_major.size() < n) {
         return ImageStatus::kInvalidArgument;
     }
@@ -2173,7 +2217,8 @@ ImageStatus imnlmfilt_2d(ArrayRef<f64> img_col_major, usize height, usize width,
             }
             sum_w += max_w;
             sum_wi += max_w * img_col_major[c * height + r];
-            out_col_major[c * height + r] = sum_wi / sum_w;
+            out_col_major[c * height + r] =
+                (sum_w > 0.0) ? (sum_wi / sum_w) : img_col_major[c * height + r];
         }
     }
     return ImageStatus::kOk;

@@ -1,5 +1,7 @@
 #include "keel/image.h"
 
+#include "keel/math.h"
+
 namespace keel::image {
 
 namespace {
@@ -37,9 +39,12 @@ constexpr f64 kCAtC2[25] = {
 };
 
 inline i32 mirror1(i32 k, i32 n) noexcept {
-    if (k < 0) return -k;
-    if (k >= n) return 2 * n - 2 - k;
-    return k;
+    if (n <= 1) return 0;
+    const i32 period = 2 * (n - 1);
+    i32 m = k % period;
+    if (m < 0) m += period;
+    if (m >= n) m = period - m;
+    return m;
 }
 
 inline f64 sample_m(ArrayRef<f64> mosaic, i32 r, i32 c, usize m, usize n) noexcept {
@@ -62,6 +67,7 @@ inline f64 conv5(ArrayRef<f64> mosaic, i32 r, i32 c, usize m, usize n, const f64
 }
 
 inline f64 clamp_pixel(f64 v, f64 max_val) noexcept {
+    if (keel::is_nan(v)) return v;
     if (v < 0.0) v = 0.0;
     if (max_val > 0.0 && v > max_val) v = max_val;
     return v;
@@ -72,7 +78,8 @@ inline f64 clamp_pixel(f64 v, f64 max_val) noexcept {
 ImageStatus demosaic_mhc(ArrayRef<f64> mosaic_col_major, usize height, usize width,
                          BayerPattern pattern, f64 max_val, MutArrayRef<f64> out_r,
                          MutArrayRef<f64> out_g, MutArrayRef<f64> out_b) noexcept {
-    if (height < 2u || width < 2u || (height % 2u) != 0u || (width % 2u) != 0u) {
+    if (height < 2u || width < 2u || (height % 2u) != 0u || (width % 2u) != 0u ||
+        height > Limits<usize>::kMax / width || keel::is_nan(max_val)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize npix = height * width;

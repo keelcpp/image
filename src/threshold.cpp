@@ -8,7 +8,8 @@ namespace keel::image {
 
 ImageStatus histogram(ArrayRef<f64> img, f64 min_val, f64 max_val, MutArrayRef<f64> counts) noexcept {
     const usize nbins = counts.size();
-    if (nbins == 0 || !(max_val >= min_val)) {
+    if (nbins == 0 || !keel::is_finite(min_val) || !keel::is_finite(max_val) ||
+        !(max_val >= min_val)) {
         return ImageStatus::kInvalidArgument;
     }
     for (usize i = 0; i < nbins; ++i) {
@@ -43,8 +44,10 @@ OtsuResult otsu_threshold(ArrayRef<f64> hist_counts, Allocator* alloc) {
     f64 total = 0.0;
     f64 sum_total = 0.0;
     for (usize i = 0; i < l; ++i) {
-        total += hist_counts[i];
-        sum_total += as<f64>(i) * hist_counts[i];
+        const f64 c = hist_counts[i];
+        if (!(c >= 0.0) || !keel::is_finite(c)) return res;
+        total += c;
+        sum_total += as<f64>(i) * c;
     }
     if (total <= 0.0 || l == 1) {
         return res;

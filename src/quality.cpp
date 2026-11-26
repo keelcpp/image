@@ -29,9 +29,11 @@ f64 mse_c64(ArrayRef<c64> a, ArrayRef<c64> b) noexcept {
 }
 
 f64 psnr(ArrayRef<f64> a, ArrayRef<f64> b, f64 peak) noexcept {
+    if (!(peak > 0.0) || !keel::is_finite(peak)) return Limits<f64>::quiet_nan();
     const usize n = keel::min(a.size(), b.size());
     if (n == 0) return Limits<f64>::infinity();
     const f64 m = mse(a, b);
+    if (keel::is_nan(m)) return Limits<f64>::quiet_nan();
     if (m == 0.0) return Limits<f64>::infinity();
     return 10.0 * keel::log10((peak * peak) / m);
 }
@@ -61,7 +63,8 @@ f64 std2(ArrayRef<f64> img) noexcept {
 
 ImageStatus gaussian_kernel_2d(usize height, usize width, f64 sigma,
                                MutArrayRef<f64> out_col_major) noexcept {
-    if (height == 0 || width == 0 || !(sigma > 0.0) || !keel::is_finite(sigma)) {
+    if (height == 0 || width == 0 || !(sigma > 0.0) || !keel::is_finite(sigma) ||
+        height > Limits<usize>::kMax / width) {
         return ImageStatus::kInvalidArgument;
     }
     const usize total = height * width;
@@ -97,7 +100,8 @@ ImageStatus correlate_2d_replicate(ArrayRef<f64> img_col_major, usize height, us
     if (height == 0 || width == 0) {
         return ImageStatus::kOk;
     }
-    if (kh == 0 || kw == 0) {
+    if (kh == 0 || kw == 0 || height > Limits<usize>::kMax / width ||
+        kh > Limits<usize>::kMax / kw) {
         return ImageStatus::kInvalidArgument;
     }
     const usize total = height * width;
@@ -137,7 +141,13 @@ ImageStatus correlate_2d_replicate(ArrayRef<f64> img_col_major, usize height, us
 
 f64 ssim(ArrayRef<f64> a_col_major, ArrayRef<f64> b_col_major, usize height, usize width,
          f64 dynamic_range, Allocator* alloc) {
+    if (!(dynamic_range > 0.0) || !keel::is_finite(dynamic_range)) {
+        return Limits<f64>::quiet_nan();
+    }
     if (height == 0 || width == 0) return 1.0;
+    if (height > Limits<usize>::kMax / width) {
+        return Limits<f64>::quiet_nan();
+    }
     const usize total = height * width;
     if (a_col_major.size() < total || b_col_major.size() < total) {
         return Limits<f64>::quiet_nan();
@@ -181,8 +191,8 @@ f64 ssim(ArrayRef<f64> a_col_major, ArrayRef<f64> b_col_major, usize height, usi
     for (usize i = 0; i < total; ++i) {
         const f64 ma = mu_a[i];
         const f64 mb = mu_b[i];
-        const f64 va = sa2[i] - ma * ma;
-        const f64 vb = sb2[i] - mb * mb;
+        const f64 va = keel::max(0.0, sa2[i] - ma * ma);
+        const f64 vb = keel::max(0.0, sb2[i] - mb * mb);
         const f64 cov = sab[i] - ma * mb;
 
         const f64 num = (2.0 * ma * mb + c1) * (2.0 * cov + c2);

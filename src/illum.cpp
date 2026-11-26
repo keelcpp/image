@@ -74,10 +74,12 @@ void collect_masked_channel(ArrayRef<f64> ch, ArrayRef<u8> mask, Array<f64>& out
     const usize n = ch.size();
     out.reserve(n);
     if (mask.empty()) {
-        for (usize i = 0; i < n; ++i) out.push_back(ch[i]);
+        for (usize i = 0; i < n; ++i) {
+            if (!is_nan(ch[i])) out.push_back(ch[i]);
+        }
     } else {
         for (usize i = 0; i < n; ++i) {
-            if (mask[i] != 0) out.push_back(ch[i]);
+            if (mask[i] != 0 && !is_nan(ch[i])) out.push_back(ch[i]);
         }
     }
 }
@@ -176,6 +178,7 @@ ImageStatus illumpca_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
     rows.reserve(3 * n);
     if (mask.empty()) {
         for (usize i = 0; i < n; ++i) {
+            if (!is_finite(r[i]) || !is_finite(g[i]) || !is_finite(b[i])) continue;
             rows.push_back(r[i]);
             rows.push_back(g[i]);
             rows.push_back(b[i]);
@@ -183,6 +186,7 @@ ImageStatus illumpca_planar(ArrayRef<f64> r, ArrayRef<f64> g, ArrayRef<f64> b,
     } else {
         for (usize i = 0; i < n; ++i) {
             if (mask[i] == 0) continue;
+            if (!is_finite(r[i]) || !is_finite(g[i]) || !is_finite(b[i])) continue;
             rows.push_back(r[i]);
             rows.push_back(g[i]);
             rows.push_back(b[i]);
@@ -421,7 +425,8 @@ ImageStatus colordiff_lab_planar(ArrayRef<f64> l1, ArrayRef<f64> a1, ArrayRef<f6
         b2.size() != n || out.size() != n) {
         return ImageStatus::kInvalidArgument;
     }
-    if (!(kL > 0.0) || !(kC > 0.0) || !(kH > 0.0) || !(K1 > 0.0) || !(K2 > 0.0)) {
+    if (!is_finite(kL) || !is_finite(kC) || !is_finite(kH) || !is_finite(K1) || !is_finite(K2) ||
+        !(kL > 0.0) || !(kC > 0.0) || !(kH > 0.0) || !(K1 > 0.0) || !(K2 > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     if (standard == ColorDiffStandard::kCiede2000) {

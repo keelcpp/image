@@ -121,8 +121,8 @@ void eigvals_3x3_sym(f64 a11, f64 a22, f64 a33, f64 a12, f64 a13, f64 a23, f64& 
         const f64 p2 = (a11 - q) * (a11 - q) + (a22 - q) * (a22 - q) + (a33 - q) * (a33 - q) +
                        2.0 * p1;
         const f64 p = keel::sqrt(p2 / 6.0);
-        if (p == 0.0) {
-            l1 = l2 = l3 = q;
+        if (!(p > 0.0) || !keel::is_finite(p)) {
+            l1 = l2 = l3 = keel::is_finite(q) ? q : 0.0;
             return;
         }
         const f64 b11 = (a11 - q) / p;
@@ -150,8 +150,8 @@ void eigvals_3x3_sym(f64 a11, f64 a22, f64 a33, f64 a12, f64 a13, f64 a23, f64& 
 ImageStatus fibermetric_2d(ArrayRef<f64> img_col_major, usize height, usize width,
                            ArrayRef<f64> thickness, f64 sensitivity, bool bright,
                            MutArrayRef<f64> out_col_major, Allocator* alloc) {
-    if (height < 2u || width < 2u || thickness.empty() || !keel::is_finite(sensitivity) ||
-        !(sensitivity > 0.0)) {
+    if (height < 2u || width < 2u || height > Limits<usize>::kMax / width || thickness.empty() ||
+        !keel::is_finite(sensitivity) || !(sensitivity > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize n = height * width;
@@ -159,14 +159,13 @@ ImageStatus fibermetric_2d(ArrayRef<f64> img_col_major, usize height, usize widt
         return ImageStatus::kInvalidArgument;
     }
     for (usize i = 0; i < thickness.size(); ++i) {
-        if (!keel::is_finite(thickness[i]) || !(thickness[i] > 0.0)) {
+        if (!keel::is_finite(thickness[i]) || !(thickness[i] > 0.0) || thickness[i] > 1e6) {
             return ImageStatus::kInvalidArgument;
         }
     }
 
-    for (usize i = 0; i < n; ++i) out_col_major[i] = 0.0;
-
     ArenaTemp scratch = get_scratch(alloc);
+    Array<f64> acc(n, 0.0, scratch.allocator());
     Array<f64> smoothed(n, 0.0, scratch.allocator());
     const f64 beta_sq2 = 2.0 * kFrangiBeta * kFrangiBeta;
     const f64 c_sq2 = 2.0 * sensitivity * sensitivity;
@@ -204,17 +203,19 @@ ImageStatus fibermetric_2d(ArrayRef<f64> img_col_major, usize height, usize widt
                 const f64 resp =
                     keel::exp(-rb_sq / beta_sq2) * (1.0 - keel::exp(-s_sq / c_sq2));
                 const usize idx = cc * height + r;
-                if (resp > out_col_major[idx]) out_col_major[idx] = resp;
+                if (resp > acc[idx]) acc[idx] = resp;
             }
         }
     }
+    for (usize i = 0; i < n; ++i) out_col_major[i] = acc[i];
     return ImageStatus::kOk;
 }
 
 ImageStatus fibermetric_3d(ArrayRef<f64> vol_col_major, usize height, usize width, usize depth,
                            ArrayRef<f64> thickness, f64 sensitivity, bool bright,
                            MutArrayRef<f64> out_col_major, Allocator* alloc) {
-    if (height < 2u || width < 2u || depth < 2u || thickness.empty() ||
+    if (height < 2u || width < 2u || depth < 2u || height > Limits<usize>::kMax / width ||
+        (height * width) > Limits<usize>::kMax / depth || thickness.empty() ||
         !keel::is_finite(sensitivity) || !(sensitivity > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
@@ -224,14 +225,13 @@ ImageStatus fibermetric_3d(ArrayRef<f64> vol_col_major, usize height, usize widt
         return ImageStatus::kInvalidArgument;
     }
     for (usize i = 0; i < thickness.size(); ++i) {
-        if (!keel::is_finite(thickness[i]) || !(thickness[i] > 0.0)) {
+        if (!keel::is_finite(thickness[i]) || !(thickness[i] > 0.0) || thickness[i] > 1e6) {
             return ImageStatus::kInvalidArgument;
         }
     }
 
-    for (usize i = 0; i < n; ++i) out_col_major[i] = 0.0;
-
     ArenaTemp scratch = get_scratch(alloc);
+    Array<f64> acc(n, 0.0, scratch.allocator());
     Array<f64> smoothed(n, 0.0, scratch.allocator());
     const f64 alpha_sq2 = 2.0 * kFrangiAlpha * kFrangiAlpha;
     const f64 beta_sq2 = 2.0 * kFrangiBeta * kFrangiBeta;
@@ -283,11 +283,12 @@ ImageStatus fibermetric_3d(ArrayRef<f64> vol_col_major, usize height, usize widt
                                      keel::exp(-rb_sq / beta_sq2) *
                                      (1.0 - keel::exp(-s_sq / c_sq2));
                     const usize idx = z * hw + cc * height + r;
-                    if (resp > out_col_major[idx]) out_col_major[idx] = resp;
+                    if (resp > acc[idx]) acc[idx] = resp;
                 }
             }
         }
     }
+    for (usize i = 0; i < n; ++i) out_col_major[i] = acc[i];
     return ImageStatus::kOk;
 }
 

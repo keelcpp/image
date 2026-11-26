@@ -219,11 +219,43 @@ ImageStatus imgradientxy_2d(ArrayRef<f64> img_col_major, usize height, usize wid
             break;
         }
         case GradientMethod::kCentral: {
-            static constexpr f64 kK[3] = {-0.5, 0.0, 0.5};
-            (void)imfilter_2d(img_col_major, height, width, ArrayRef<f64>(kK, 3), 1, 3,
-                              PadMode::kReplicate, 0.0, false, false, out_gx_col_major);
-            (void)imfilter_2d(img_col_major, height, width, ArrayRef<f64>(kK, 3), 3, 1,
-                              PadMode::kReplicate, 0.0, false, false, out_gy_col_major);
+            for (usize r = 0; r < height; ++r) {
+                for (usize c = 0; c < width; ++c) {
+                    const usize idx = c * height + r;
+                    if (width == 1) {
+                        out_gx_col_major[idx] = 0.0;
+                    } else if (c == 0) {
+                        out_gx_col_major[idx] =
+                            img_col_major[1 * height + r] - img_col_major[0 * height + r];
+                    } else if (c == width - 1) {
+                        out_gx_col_major[idx] = img_col_major[(width - 1) * height + r] -
+                                                img_col_major[(width - 2) * height + r];
+                    } else {
+                        out_gx_col_major[idx] =
+                            0.5 * (img_col_major[(c + 1) * height + r] -
+                                   img_col_major[(c - 1) * height + r]);
+                    }
+                }
+            }
+            for (usize c = 0; c < width; ++c) {
+                const usize col_off = c * height;
+                for (usize r = 0; r < height; ++r) {
+                    const usize idx = col_off + r;
+                    if (height == 1) {
+                        out_gy_col_major[idx] = 0.0;
+                    } else if (r == 0) {
+                        out_gy_col_major[idx] =
+                            img_col_major[col_off + 1] - img_col_major[col_off + 0];
+                    } else if (r == height - 1) {
+                        out_gy_col_major[idx] = img_col_major[col_off + (height - 1)] -
+                                                img_col_major[col_off + (height - 2)];
+                    } else {
+                        out_gy_col_major[idx] =
+                            0.5 * (img_col_major[col_off + (r + 1)] -
+                                   img_col_major[col_off + (r - 1)]);
+                    }
+                }
+            }
             break;
         }
         case GradientMethod::kIntermediate: {
@@ -498,8 +530,9 @@ ImageStatus cornermetric_2d(ArrayRef<f64> unit_col_major, usize height, usize wi
         return ImageStatus::kInvalidArgument;
     }
 
-    static constexpr f64 kDefaultCoef[5] = {0.12007838770739, 0.23388075658030, 0.29208171142462,
-                                            0.23388075658030, 0.12007838770739};
+    static constexpr f64 kDefaultCoef[5] = {0.12007838422146333, 0.23388075753362165,
+                                            0.29208171648983004, 0.23388075753362165,
+                                            0.12007838422146333};
     ArrayRef<f64> fc =
         (filter_coef.size() == 0) ? ArrayRef<f64>(kDefaultCoef, 5) : filter_coef;
     const usize lc = fc.size();
@@ -597,20 +630,22 @@ ImageStatus cornermetric_2d(ArrayRef<f64> unit_col_major, usize height, usize wi
 ImageStatus corner_peaks_2d(ArrayRef<f64> metric_col_major, usize height, usize width, i32 max_n,
                             f64 quality_level, Array<BoundaryPoint>& out_peaks, Allocator* alloc) {
     const usize total = height * width;
-    if (metric_col_major.size() != total) {
+    if (metric_col_major.size() != total || !is_finite(quality_level) ||
+        !(quality_level >= 0.0 && quality_level <= 1.0)) {
         return ImageStatus::kInvalidArgument;
     }
     out_peaks.clear();
     if (total == 0) {
         return ImageStatus::kOk;
     }
-    f64 mx = metric_col_major[0];
-    for (usize i = 1; i < total; ++i) {
-        if (metric_col_major[i] > mx) {
-            mx = metric_col_major[i];
+    f64 mx = -Limits<f64>::infinity();
+    for (usize i = 0; i < total; ++i) {
+        const f64 v = metric_col_major[i];
+        if (is_finite(v) && v > mx) {
+            mx = v;
         }
     }
-    if (!(mx > 0.0)) {
+    if (!(mx > 0.0) || !is_finite(mx)) {
         return ImageStatus::kOk;
     }
     const f64 thr = quality_level * mx;
@@ -722,6 +757,11 @@ ImageStatus hough_2d(ArrayRef<u8> bw_col_major, usize height, usize width, f64 r
         return ImageStatus::kInvalidArgument;
     }
     const usize ntheta = theta_deg.size();
+    for (usize k = 0; k < ntheta; ++k) {
+        if (!is_finite(theta_deg[k])) {
+            return ImageStatus::kInvalidArgument;
+        }
+    }
     const f64 d_diag = (height > 0 && width > 0)
                            ? sqrt(as<f64>(height - 1) * as<f64>(height - 1)
                                   + as<f64>(width - 1) * as<f64>(width - 1))
@@ -793,13 +833,16 @@ ImageStatus houghpeaks_2d(ArrayRef<f64> h_col_major, usize nrho, usize ntheta, u
     if ((nhood_rho % 2) == 0) ++nhood_rho;
     if ((nhood_theta % 2) == 0) ++nhood_theta;
 
-    f64 mx_h = 0.0;
+    f64 mx_h = -Limits<f64>::infinity();
     for (usize i = 0; i < total; ++i) {
-        if (h_col_major[i] > mx_h) {
+        if (is_finite(h_col_major[i]) && h_col_major[i] > mx_h) {
             mx_h = h_col_major[i];
         }
     }
-    if (threshold < 0.0) {
+    if (!is_finite(mx_h)) {
+        return ImageStatus::kOk;
+    }
+    if (is_nan(threshold) || threshold < 0.0) {
         threshold = 0.5 * mx_h;
     }
 
@@ -828,14 +871,14 @@ ImageStatus houghpeaks_2d(ArrayRef<f64> h_col_major, usize nrho, usize ntheta, u
 
     while (out_peaks.size() < num_peaks) {
         usize max_idx = 0;
-        f64 max_v = hwork[0];
-        for (usize i = 1; i < total; ++i) {
-            if (hwork[i] > max_v) {
+        f64 max_v = -Limits<f64>::infinity();
+        for (usize i = 0; i < total; ++i) {
+            if (is_finite(hwork[i]) && hwork[i] > max_v) {
                 max_v = hwork[i];
                 max_idx = i;
             }
         }
-        if (max_v < threshold) {
+        if (!(max_v >= threshold)) {
             break;
         }
         const usize p = max_idx % nrho;
@@ -908,6 +951,9 @@ ImageStatus houghlines_2d(ArrayRef<u8> bw_col_major, usize height, usize width,
     constexpr f64 kDeg2Rad = kPi / 180.0;
     const f64 rho_first = rho[0];
     const f64 rho_last = rho[rho.size() - 1];
+    if (!is_finite(rho_first) || !is_finite(rho_last) || rho_last == rho_first) {
+        return ImageStatus::kInvalidArgument;
+    }
     const f64 slope = as<f64>(rho.size() - 1) / (rho_last - rho_first);
     const f64 fillgap_sq = fill_gap * fill_gap;
     const f64 minlen_sq = min_length * min_length;
@@ -1022,7 +1068,8 @@ ImageStatus imfindcircles_2d(ArrayRef<f64> gray_col_major, usize height, usize w
     const usize total = height * width;
     if (height <= 1 || width <= 1 || gray_col_major.size() != total || !is_finite(rmin)
         || !is_finite(rmax) || !(rmin > 0.0) || !(rmax >= rmin) || !is_finite(sensitivity)
-        || sensitivity < 0.0 || sensitivity > 1.0) {
+        || sensitivity < 0.0 || sensitivity > 1.0 || is_nan(edge_threshold)
+        || edge_threshold > 1.0) {
         return ImageStatus::kInvalidArgument;
     }
     out_circles.clear();
@@ -1099,14 +1146,16 @@ ImageStatus imfindcircles_2d(ArrayRef<f64> gray_col_major, usize height, usize w
     for (usize c = 0; c < width; ++c) {
         for (usize r = 0; r < height; ++r) {
             const usize idx = c * height + r;
-            if (grad_mag[idx] > t) {
+            if (is_finite(grad_mag[idx]) && grad_mag[idx] > t) {
                 const f64 ux = use_single_grad
                                    ? as<f64>(as<f32>(gx[idx]) / as<f32>(grad_mag[idx]))
                                    : (gx[idx] / grad_mag[idx]);
                 const f64 uy = use_single_grad
                                    ? as<f64>(as<f32>(gy[idx]) / as<f32>(grad_mag[idx]))
                                    : (gy[idx] / grad_mag[idx]);
-                edges.push_back(EdgePix{as<f64>(c + 1), as<f64>(r + 1), ux, uy});
+                if (is_finite(ux) && is_finite(uy)) {
+                    edges.push_back(EdgePix{as<f64>(c + 1), as<f64>(r + 1), ux, uy});
+                }
             }
         }
     }
@@ -1337,6 +1386,9 @@ ImageStatus imfindcircles_2d(ArrayRef<f64> gray_col_major, usize height, usize w
             i64 best_r = r1_int;
             for (usize b = 0; b < nbins; ++b) {
                 const f64 rcur = as<f64>(r1_int + as<i64>(b));
+                if (!(rcur > 0.0)) {
+                    continue;
+                }
                 const f64 hnorm = hbin[b] / (2.0 * kPi * rcur);
                 if (hnorm > best_h) {
                     best_h = hnorm;

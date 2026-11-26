@@ -504,6 +504,7 @@ ImageStatus bwlabel_3d(ArrayRef<u8> vol_col_major, usize height, usize width, us
 
     auto find = [&](i32 x) noexcept -> i32 {
         while (parent[as<usize>(x)] != x) {
+            parent[as<usize>(x)] = parent[as<usize>(parent[as<usize>(x)])];
             x = parent[as<usize>(x)];
         }
         return x;
@@ -1194,13 +1195,26 @@ ImageStatus region_component_attrs(ArrayRef<i32> pixel_rows, ArrayRef<i32> pixel
             return ImageStatus::kInvalidArgument;
         }
         const usize n = end - beg;
+        if (n == 0) {
+            out_values[k] = (attr == RegionAttr::kCircularity || attr == RegionAttr::kSolidity ||
+                             attr == RegionAttr::kMinIntensity || attr == RegionAttr::kMaxIntensity ||
+                             attr == RegionAttr::kMeanIntensity)
+                                ? kNaN
+                                : 0.0;
+            continue;
+        }
         ArrayRef<i32> rs(pixel_rows.data() + beg, n);
         ArrayRef<i32> cs(pixel_cols.data() + beg, n);
         i32 rmin = Limits<i32>::kMax;
-        i32 rmax = -1;
+        i32 rmax = Limits<i32>::kMin;
         i32 cmin = Limits<i32>::kMax;
-        i32 cmax = -1;
+        i32 cmax = Limits<i32>::kMin;
         for (usize i = 0; i < n; ++i) {
+            if (needs_marker &&
+                (rs[i] < 0 || cs[i] < 0 || as<usize>(rs[i]) >= height ||
+                 as<usize>(cs[i]) >= width)) {
+                return ImageStatus::kInvalidArgument;
+            }
             if (rs[i] < rmin) {
                 rmin = rs[i];
             }
@@ -1343,8 +1357,14 @@ ImageStatus freeman_chain_code(ArrayRef<f64> rows, ArrayRef<f64> cols, Array<f64
 
     for (usize k = 0; k < n_codes; ++k) {
         const usize next = (k + 1 < n) ? (k + 1) : 0;
-        const i32 dr = as<i32>(rows[next] - rows[k]);
-        const i32 dc = as<i32>(cols[next] - cols[k]);
+        const f64 df_r = rows[next] - rows[k];
+        const f64 df_c = cols[next] - cols[k];
+        if (!is_finite(df_r) || !is_finite(df_c) || abs(df_r) > 1.5 || abs(df_c) > 1.5) {
+            out_fcc[k] = kNaN;
+            continue;
+        }
+        const i32 dr = as<i32>(round(df_r));
+        const i32 dc = as<i32>(round(df_c));
         out_fcc[k] = dir_code(dr, dc);
     }
     for (usize k = 0; k < n_codes; ++k) {

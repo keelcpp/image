@@ -169,17 +169,25 @@ Plane llf_core(const Plane& input, f32 sigma, f32 alpha, f32 beta, i32 num_inten
     }
     if (num_pyr < 1) num_pyr = 1;
 
-    f32 min_val = input.v[0];
-    f32 max_val = input.v[0];
-    for (usize i = 1; i < input.v.size(); ++i) {
-        if (input.v[i] < min_val) min_val = input.v[i];
-        if (input.v[i] > max_val) max_val = input.v[i];
+    f32 min_val = Limits<f32>::infinity();
+    f32 max_val = -Limits<f32>::infinity();
+    for (usize i = 0; i < input.v.size(); ++i) {
+        const f32 val = input.v[i];
+        if (!keel::is_finite(as<f64>(val))) continue;
+        if (val < min_val) min_val = val;
+        if (val > max_val) max_val = val;
     }
 
+    if (!keel::is_finite(as<f64>(min_val)) || !keel::is_finite(as<f64>(max_val)) ||
+        min_val > max_val) {
+        Plane copy(input.h, input.w, alloc);
+        for (usize i = 0; i < input.v.size(); ++i) copy.v[i] = input.v[i];
+        return copy;
+    }
     if (n_levels == 1) {
         return remap_plane(input, 0.5f * (min_val + max_val), sigma, alpha, beta, alloc);
     }
-    if (min_val == max_val) {
+    if (min_val == max_val || !keel::is_finite(as<f64>(max_val - min_val))) {
         Plane copy(input.h, input.w, alloc);
         for (usize i = 0; i < input.v.size(); ++i) copy.v[i] = input.v[i];
         return copy;
@@ -245,7 +253,8 @@ Plane llf_core(const Plane& input, f32 sigma, f32 alpha, f32 beta, i32 num_inten
 ImageStatus local_laplacian_gray(ArrayRef<f32> in_col_major, usize height, usize width, f32 sigma,
                                  f32 alpha, f32 beta, i32 num_intensity_levels,
                                  MutArrayRef<f32> out_col_major, Allocator* alloc) {
-    if (height == 0u || width == 0u || !keel::is_finite(as<f64>(sigma)) || sigma < 0.0f ||
+    if (height == 0u || width == 0u || height > Limits<usize>::kMax / width ||
+        !keel::is_finite(as<f64>(sigma)) || sigma < 0.0f ||
         !keel::is_finite(as<f64>(alpha)) || !(alpha > 0.0f) || !keel::is_finite(as<f64>(beta)) ||
         beta < 0.0f) {
         return ImageStatus::kInvalidArgument;
@@ -269,7 +278,8 @@ ImageStatus local_laplacian_rgb(ArrayRef<f32> in_r, ArrayRef<f32> in_g, ArrayRef
                                 i32 num_intensity_levels, bool process_luminance,
                                 MutArrayRef<f32> out_r, MutArrayRef<f32> out_g,
                                 MutArrayRef<f32> out_b, Allocator* alloc) {
-    if (height == 0u || width == 0u || !keel::is_finite(as<f64>(sigma)) || sigma < 0.0f ||
+    if (height == 0u || width == 0u || height > Limits<usize>::kMax / width ||
+        !keel::is_finite(as<f64>(sigma)) || sigma < 0.0f ||
         !keel::is_finite(as<f64>(alpha)) || !(alpha > 0.0f) || !keel::is_finite(as<f64>(beta)) ||
         beta < 0.0f) {
         return ImageStatus::kInvalidArgument;

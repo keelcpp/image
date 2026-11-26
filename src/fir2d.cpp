@@ -78,8 +78,9 @@ T linear_interp_uniform(ArrayRef<f64> xs, ArrayRef<T> ys, f64 q) noexcept {
     if (q >= xs[xs.size() - 1]) return ys[ys.size() - 1];
     const f64 dx = xs[1] - xs[0];
     const f64 t = (q - xs[0]) / dx;
-    const usize i = as<usize>(floor(t));
-    const f64 a = t - as<f64>(i);
+    usize i = as<usize>(floor(t));
+    if (i + 1 >= xs.size()) i = xs.size() - 2;
+    const f64 a = clamp(t - as<f64>(i), 0.0, 1.0);
     return (1.0 - a) * ys[i] + a * ys[i + 1];
 }
 
@@ -144,24 +145,25 @@ ImageStatus fsamp2_real(ArrayRef<f64> hd_col_major, usize h, usize w,
 
 ImageStatus fsamp2_complex(ArrayRef<c64> hd_col_major, usize h, usize w,
                            MutArrayRef<c64> out_col_major, Allocator* alloc) {
+    if (h > 0 && w > Limits<usize>::kMax / h) return ImageStatus::kInvalidArgument;
     const usize n = h * w;
     if (h == 0 || w == 0 || hd_col_major.size() != n || out_col_major.size() != n) {
         return ImageStatus::kInvalidArgument;
     }
 
-    Array<f64> re_in(n, 0.0, alloc);
-    Array<f64> im_in(n, 0.0, alloc);
-    Array<f64> re_out(n, 0.0, alloc);
-    Array<f64> im_out(n, 0.0, alloc);
-    for (usize i = 0; i < n; ++i) {
-        re_in[i] = hd_col_major[i].real();
-        im_in[i] = hd_col_major[i].imag();
-    }
-    (void)fsamp2_real(re_in.as_ref(), h, w, re_out.as_mut_ref(), alloc);
-    (void)fsamp2_real(im_in.as_ref(), h, w, im_out.as_mut_ref(), alloc);
-    for (usize i = 0; i < n; ++i) {
-        out_col_major[i] = c64(re_out[i], im_out[i]);
-    }
+    Array<c64> shifted(n, c64(0.0, 0.0), alloc);
+    ifftshift_2d(hd_col_major, h, w, shifted.as_mut_ref());
+
+    Array<c64> tmp(n, c64(0.0, 0.0), alloc);
+    const usize dims[2] = {h, w};
+    const fft::FftBatchLayout lay0 = fft::FftBatchLayout::from_col_major(ArrayRef<usize>(dims, 2), 0);
+    const fft::FftBatchLayout lay1 = fft::FftBatchLayout::from_col_major(ArrayRef<usize>(dims, 2), 1);
+    fft::ifft_batch(shifted.as_ref(), tmp.as_mut_ref(), lay0);
+    fft::ifft_batch(tmp.as_ref(), shifted.as_mut_ref(), lay1);
+
+    Array<c64> h_shifted(n, c64(0.0, 0.0), alloc);
+    fftshift_2d(shifted.as_ref(), h, w, h_shifted.as_mut_ref());
+    rot90_2(h_shifted.as_ref(), h, w, out_col_major);
     return ImageStatus::kOk;
 }
 
@@ -172,16 +174,16 @@ ImageStatus ftrans2(ArrayRef<f64> b, ArrayRef<f64> t_col_major, usize mt, usize 
 
     bool all_zero = true;
     for (usize i = 0; i < len; ++i) {
+        if (!is_finite(b[i])) return ImageStatus::kInvalidArgument;
         if (b[i] != 0.0) {
             all_zero = false;
-            break;
         }
     }
     if (all_zero) return ImageStatus::kInvalidArgument;
 
     const f64 sqrt_eps = sqrt(Limits<f64>::kEpsilon);
     for (usize i = 0; i < len; ++i) {
-        if (abs(b[i] - b[len - 1 - i]) > sqrt_eps) return ImageStatus::kInvalidArgument;
+        if (!(abs(b[i] - b[len - 1 - i]) <= sqrt_eps)) return ImageStatus::kInvalidArgument;
     }
 
     Array<f64> t_buf(alloc);
@@ -301,7 +303,9 @@ ImageStatus fwind1_real(ArrayRef<f64> hd_col_major, usize hh, usize wh, ArrayRef
     if (win2.empty()) {
         const f64 sqrt_eps = sqrt(Limits<f64>::kEpsilon);
         for (usize i = 0; i < n; ++i) {
-            if (abs(win1[i] - win1[n - 1 - i]) > sqrt_eps) return ImageStatus::kInvalidArgument;
+            if (!is_finite(win1[i]) || !(abs(win1[i] - win1[n - 1 - i]) <= sqrt_eps)) {
+                return ImageStatus::kInvalidArgument;
+            }
         }
         Array<f64> t(n, 0.0, alloc);
         for (usize i = 0; i < n; ++i) {
@@ -352,7 +356,10 @@ ImageStatus fwind1_complex(ArrayRef<c64> hd_col_major, usize hh, usize wh, Array
     if (win2.empty()) {
         const f64 sqrt_eps = sqrt(Limits<f64>::kEpsilon);
         for (usize i = 0; i < n; ++i) {
-            if (abs(win1[i] - win1[n - 1 - i]) > sqrt_eps) return ImageStatus::kInvalidArgument;
+            if (!is_finite(win1[i].real()) || !is_finite(win1[i].imag()) ||
+                !(abs(win1[i] - win1[n - 1 - i]) <= sqrt_eps)) {
+                return ImageStatus::kInvalidArgument;
+            }
         }
         Array<f64> t(n, 0.0, alloc);
         for (usize i = 0; i < n; ++i) {

@@ -70,6 +70,9 @@ f64 linear_to_srgb(f64 c) noexcept {
 }
 
 Color3 rgb_to_hsv(f64 r, f64 g, f64 b) noexcept {
+    if (keel::is_nan(r) || keel::is_nan(g) || keel::is_nan(b)) {
+        return Color3{kNaN, kNaN, kNaN};
+    }
     const f64 cmax = keel::max(r, keel::max(g, b));
     const f64 cmin = keel::min(r, keel::min(g, b));
     const f64 delta = cmax - cmin;
@@ -89,14 +92,18 @@ Color3 rgb_to_hsv(f64 r, f64 g, f64 b) noexcept {
 }
 
 Color3 hsv_to_rgb(f64 h, f64 s, f64 v) noexcept {
+    if (!keel::is_finite(h) || keel::is_nan(s) || keel::is_nan(v)) {
+        return Color3{kNaN, kNaN, kNaN};
+    }
     h = h - keel::floor(h);
     const f64 h6 = h * 6.0;
-    const i32 sector = as<i32>(keel::floor(h6));
+    i32 sector = as<i32>(keel::floor(h6));
     const f64 f = h6 - as<f64>(sector);
+    sector = ((sector % 6) + 6) % 6;
     const f64 p = v * (1.0 - s);
     const f64 q = v * (1.0 - s * f);
     const f64 t = v * (1.0 - s * (1.0 - f));
-    switch (sector % 6) {
+    switch (sector) {
         case 0: return Color3{v, t, p};
         case 1: return Color3{q, v, p};
         case 2: return Color3{p, v, t};
@@ -329,6 +336,7 @@ f64 hlg_rgb2lin(f64 v) noexcept {
 }
 
 f64 hlg_lin2rgb(f64 v) noexcept {
+    if (!(v > 0.0)) return 0.0;
     constexpr f64 a = 0.17883277;
     constexpr f64 b = 1.0 - 4.0 * a;
     const f64 c = 0.5 - a * log(4.0 * a);
@@ -365,15 +373,18 @@ void mat3_inv(const f64 m[9], f64 inv[9]) noexcept {
 }
 
 u16 clamp_round_half_up_u16(f64 v) noexcept {
-    if (v < 0.0) return 0;
-    if (v > 65535.0) return 65535;
+    if (!(v > 0.0)) return 0;
+    if (v >= 65535.0) return 65535;
     return as<u16>(v + 0.5);
 }
 
 u16 clamp_round_u16(f64 v) noexcept {
+    if (!keel::is_finite(v)) {
+        return (v > 0.0) ? u16{65535} : u16{0};
+    }
     const f64 r = round(v);
-    if (r < 0.0) return 0;
-    if (r > 65535.0) return 65535;
+    if (r <= 0.0) return 0;
+    if (r >= 65535.0) return 65535;
     return as<u16>(r);
 }
 
@@ -537,7 +548,13 @@ ImageStatus colormap_unique(ArrayRef<usize> idx_0based_in, ArrayRef<f64> map_r, 
     out_g.clear();
     out_b.clear();
     if (m == 0) {
-        return ImageStatus::kOk;
+        return (n == 0) ? ImageStatus::kOk : ImageStatus::kInvalidArgument;
+    }
+    for (usize k = 0; k < m; ++k) {
+        if (!keel::is_finite(map_r[k]) || !keel::is_finite(map_g[k]) ||
+            !keel::is_finite(map_b[k])) {
+            return ImageStatus::kInvalidArgument;
+        }
     }
 
     Allocator* a = alloc ? alloc : default_allocator();
@@ -644,6 +661,9 @@ ImageStatus greedy_graph_coloring_2d(ArrayRef<i32> labels_col_major, usize heigh
                                      ArrayRef<f64> cmap_r, ArrayRef<f64> cmap_g,
                                      ArrayRef<f64> cmap_b, Array<f64>& out_r, Array<f64>& out_g,
                                      Array<f64>& out_b, Allocator* alloc) {
+    if (height > 0 && width > Limits<usize>::kMax / height) {
+        return ImageStatus::kInvalidArgument;
+    }
     const usize total = height * width;
     const usize nc_in = cmap_r.size();
     if (labels_col_major.size() != total || cmap_g.size() != nc_in || cmap_b.size() != nc_in
@@ -654,9 +674,18 @@ ImageStatus greedy_graph_coloring_2d(ArrayRef<i32> labels_col_major, usize heigh
 
     bool tf_zero = false;
     for (usize i = 0; i < total; ++i) {
+        if (labels_col_major[i] < 0) {
+            return ImageStatus::kInvalidArgument;
+        }
         if (labels_col_major[i] == 0) {
             tf_zero = true;
-            break;
+        }
+    }
+    if (tf_zero) {
+        for (usize i = 0; i < total; ++i) {
+            if (labels_col_major[i] == Limits<i32>::kMax) {
+                return ImageStatus::kInvalidArgument;
+            }
         }
     }
 

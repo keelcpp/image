@@ -76,6 +76,7 @@ struct Rect {
 
 Rect quadtree_decomp(ArrayRef<f32> dark, usize h, Rect q, i32 num_levels) noexcept {
     auto mean_of = [&](const Rect& box) noexcept -> f64 {
+        if (box.r0 > box.r1 || box.c0 > box.c1) return -Limits<f64>::infinity();
         f64 s = 0.0;
         const usize n = (box.r1 - box.r0 + 1) * (box.c1 - box.c0 + 1);
         for (usize c = box.c0; c <= box.c1; ++c) {
@@ -86,6 +87,7 @@ Rect quadtree_decomp(ArrayRef<f32> dark, usize h, Rect q, i32 num_levels) noexce
         return s / as<f64>(n);
     };
     for (i32 lvl = 0; lvl < num_levels; ++lvl) {
+        if (q.r0 >= q.r1 || q.c0 >= q.c1) break;
         const i64 rmid = as<i64>(round((as<f64>(q.r0) + as<f64>(q.r1)) / 2.0));
         const i64 cmid = as<i64>(round((as<f64>(q.c0) + as<f64>(q.c1)) / 2.0));
         const Rect q1{q.r0, q.c0, as<usize>(rmid), as<usize>(cmid)};
@@ -141,7 +143,8 @@ void approxdcp_atm_light(ArrayRef<f32> img, ArrayRef<f32> dark, usize npix, usiz
     constexpr i32 kBins = 256;
     usize hist[kBins]{};
     for (usize i = 0; i < npix; ++i) {
-        i32 b = as<i32>(floor(dark[i] * as<f32>(kBins - 1) + 0.5f));
+        const f32 dv = is_nan(as<f64>(dark[i])) ? 0.0f : clamp(dark[i], 0.0f, 1.0f);
+        i32 b = as<i32>(floor(dv * as<f32>(kBins - 1) + 0.5f));
         if (b < 0) b = 0;
         if (b >= kBins) b = kBins - 1;
         hist[b]++;
@@ -189,7 +192,11 @@ void approxdcp_atm_light(ArrayRef<f32> img, ArrayRef<f32> dark, usize npix, usiz
                 mi = i;
             }
         }
-        for (usize p = 0; p < channels; ++p) atm[p] = img[p * npix + mi];
+        for (usize p = 0; p < channels; ++p) {
+            f32 v = img[p * npix + mi];
+            if (v == 0.0f) v = Limits<f32>::kEpsilon;
+            atm[p] = v;
+        }
     } else {
         const usize bi = as<usize>(best_idx);
         for (usize p = 0; p < channels; ++p) {
@@ -324,7 +331,7 @@ ImageStatus box_filter_2d_replicate(ArrayRef<f64> in_col_major, usize height, us
         }
     }
 
-    const f64 inv_area = 1.0 / as<f64>(k * k);
+    const f64 inv_area = 1.0 / (as<f64>(k) * as<f64>(k));
     for (i32 c = 0; c < iw; ++c) {
         const usize c0 = as<usize>(c);
         const usize c1 = as<usize>(c + k);
@@ -349,7 +356,9 @@ ImageStatus guided_filter_gray(ArrayRef<f64> img_col_major, ArrayRef<f64> guide_
     if (!guide_col_major.empty() && guide_col_major.size() != n) {
         return ImageStatus::kInvalidArgument;
     }
-    if (nhood <= 0 || (nhood % 2) == 0) return ImageStatus::kInvalidArgument;
+    if (nhood <= 0 || (nhood % 2) == 0 || !is_finite(eps) || eps < 0.0) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (height == 0 || width == 0) return ImageStatus::kOk;
 
     ArrayRef<f64> g = guide_col_major.empty() ? img_col_major : guide_col_major;
@@ -376,7 +385,8 @@ ImageStatus guided_filter_gray(ArrayRef<f64> img_col_major, ArrayRef<f64> guide_
         const f64 m_p = mean_p[i];
         const f64 var_i = corr_i[i] - m_i * m_i;
         const f64 cov_ip = corr_ip[i] - m_i * m_p;
-        const f64 a = cov_ip / (var_i + eps);
+        const f64 denom = var_i + eps;
+        const f64 a = (denom != 0.0) ? (cov_ip / denom) : 0.0;
         a_buf[i] = a;
         b_buf[i] = m_p - a * m_i;
     }
@@ -406,11 +416,16 @@ ImageStatus dehaze(ArrayRef<f32> in_planar_col_major, usize height, usize width,
         out_planar_col_major.size() != npix * channels) {
         return ImageStatus::kInvalidArgument;
     }
-    if (!is_finite(amount) || amount < 0.0 || amount > 1.0) {
+    if (!is_finite(amount) || amount < 0.0 || amount > 1.0 || !is_finite(boost_amount)) {
         return ImageStatus::kInvalidArgument;
     }
-    if (!atm_override.empty() && atm_override.size() != channels) {
-        return ImageStatus::kInvalidArgument;
+    if (!atm_override.empty()) {
+        if (atm_override.size() != channels) return ImageStatus::kInvalidArgument;
+        for (usize p = 0; p < channels; ++p) {
+            if (!is_finite(as<f64>(atm_override[p])) || atm_override[p] < 0.0f) {
+                return ImageStatus::kInvalidArgument;
+            }
+        }
     }
     if (!out_thickness_col_major.empty() && out_thickness_col_major.size() != npix) {
         return ImageStatus::kInvalidArgument;
@@ -422,7 +437,8 @@ ImageStatus dehaze(ArrayRef<f32> in_planar_col_major, usize height, usize width,
     // Clamp working copy to [0, 1].
     Array<f32> img(npix * channels, 0.0f, alloc);
     for (usize i = 0; i < npix * channels; ++i) {
-        img[i] = clamp(in_planar_col_major[i], 0.0f, 1.0f);
+        const f32 v = in_planar_col_major[i];
+        img[i] = is_nan(as<f64>(v)) ? 0.0f : clamp(v, 0.0f, 1.0f);
     }
 
     f32 atm[3] = {0.0f, 0.0f, 0.0f};

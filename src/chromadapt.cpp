@@ -121,6 +121,11 @@ void make_adapt(const f64 src_xyz[3], const f64 dst_xyz[3], const f64 m[9], f64 
     f64 lms_dst[3]{};
     mat3_mul_vec3(m, src_xyz, lms_src);
     mat3_mul_vec3(m, dst_xyz, lms_dst);
+    for (i32 k = 0; k < 3; ++k) {
+        if (keel::abs(lms_src[k]) < Limits<f64>::kEpsilon) {
+            lms_src[k] = (lms_src[k] < 0.0) ? -Limits<f64>::kEpsilon : Limits<f64>::kEpsilon;
+        }
+    }
     const f64 d[9] = {
         lms_dst[0] / lms_src[0], 0.0, 0.0,
         0.0, lms_dst[1] / lms_src[1], 0.0,
@@ -181,6 +186,11 @@ ImageStatus chromadapt_planar(ArrayRef<f64> in_r, ArrayRef<f64> in_g, ArrayRef<f
     const usize n = in_r.size();
     if (n == 0u || in_g.size() != n || in_b.size() != n || out_r.size() < n || out_g.size() < n ||
         out_b.size() < n) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if (!keel::is_finite(illuminant_rgb01.c0) || !keel::is_finite(illuminant_rgb01.c1) ||
+        !keel::is_finite(illuminant_rgb01.c2) || illuminant_rgb01.c0 < 0.0 ||
+        illuminant_rgb01.c1 < 0.0 || illuminant_rgb01.c2 < 0.0) {
         return ImageStatus::kInvalidArgument;
     }
     if (illuminant_rgb01.c0 == 0.0 && illuminant_rgb01.c1 == 0.0 && illuminant_rgb01.c2 == 0.0) {

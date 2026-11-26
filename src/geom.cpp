@@ -76,10 +76,13 @@ inline i32 mirror_idx(i32 i, i32 n) noexcept {
 }
 
 inline i32 sym_idx(i32 i, i32 n) noexcept {
-    if (n <= 1) return 0;
-    if (i < 0) return -1 - i;
-    if (i >= n) return 2 * n - 1 - i;
-    return i;
+    return mirror_idx(i, n);
+}
+
+inline bool mul3_overflows(usize a, usize b, usize c) noexcept {
+    if (a == 0 || b == 0 || c == 0) return false;
+    if (a > Limits<usize>::kMax / b) return true;
+    return (a * b) > Limits<usize>::kMax / c;
 }
 
 struct ContribTable {
@@ -161,11 +164,24 @@ inline f64 snap_near_int(f64 v) noexcept {
 ImageStatus resize_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize channels,
                       usize out_h, usize out_w, f64 scale_y, f64 scale_x, ResizeKernel kernel,
                       bool antialias, MutArrayRef<f64> out_col_major, Allocator* alloc) {
+    if (mul3_overflows(in_h, in_w, channels) || mul3_overflows(out_h, out_w, channels)) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (in_col_major.size() != in_h * in_w * channels) return ImageStatus::kInvalidArgument;
     if (out_col_major.size() != out_h * out_w * channels) return ImageStatus::kInvalidArgument;
     if (out_h == 0 || out_w == 0 || channels == 0) return ImageStatus::kOk;
     if (in_h == 0 || in_w == 0) return ImageStatus::kInvalidArgument;
-    if (!(scale_y > 0.0) || !(scale_x > 0.0)) return ImageStatus::kInvalidArgument;
+    if (!is_finite(scale_y) || !is_finite(scale_x) || !(scale_y > 0.0) || !(scale_x > 0.0)) {
+        return ImageStatus::kInvalidArgument;
+    }
+
+    Array<f64> src_copy(alloc);
+    ArrayRef<f64> src = in_col_major;
+    if (out_col_major.data() == in_col_major.data()) {
+        src_copy.resize(in_col_major.size());
+        for (usize i = 0; i < in_col_major.size(); ++i) src_copy[i] = in_col_major[i];
+        src = src_copy.as_ref();
+    }
 
     if (kernel == ResizeKernel::kNearest) {
         const f64 sx = as<f64>(in_w) / as<f64>(out_w);
@@ -186,7 +202,7 @@ ImageStatus resize_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize 
                     if (xi < 0) xi = 0;
                     if (xi >= iw) xi = iw - 1;
                     out_col_major[out_off + xo * out_h + yo] =
-                        in_col_major[in_off + as<usize>(xi) * in_h + as<usize>(yi)];
+                        src[in_off + as<usize>(xi) * in_h + as<usize>(yi)];
                 }
             }
         }
@@ -212,7 +228,7 @@ ImageStatus resize_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize 
                 f64 v = 0.0;
                 for (usize j = 0; j < cy.taps; ++j) {
                     const i32 yi = mirror_idx(first + as<i32>(j), ih);
-                    v += wrow[j] * in_col_major[in_off + x * in_h + as<usize>(yi)];
+                    v += wrow[j] * src[in_off + x * in_h + as<usize>(yi)];
                 }
                 tmp[y + x * out_h] = v;
             }
@@ -237,12 +253,24 @@ ImageStatus resize_3d(ArrayRef<f64> in_col_major, usize in_r, usize in_c, usize 
                       usize out_r, usize out_c, usize out_d, f64 scale_y, f64 scale_x,
                       f64 scale_z, ResizeKernel kernel, bool antialias,
                       MutArrayRef<f64> out_col_major, Allocator* alloc) {
+    if (mul3_overflows(in_r, in_c, in_d) || mul3_overflows(out_r, out_c, out_d)) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (in_col_major.size() != in_r * in_c * in_d) return ImageStatus::kInvalidArgument;
     if (out_col_major.size() != out_r * out_c * out_d) return ImageStatus::kInvalidArgument;
     if (out_r == 0 || out_c == 0 || out_d == 0) return ImageStatus::kOk;
     if (in_r == 0 || in_c == 0 || in_d == 0) return ImageStatus::kInvalidArgument;
-    if (!(scale_y > 0.0) || !(scale_x > 0.0) || !(scale_z > 0.0)) {
+    if (!is_finite(scale_y) || !is_finite(scale_x) || !is_finite(scale_z) ||
+        !(scale_y > 0.0) || !(scale_x > 0.0) || !(scale_z > 0.0)) {
         return ImageStatus::kInvalidArgument;
+    }
+
+    Array<f64> src_copy(alloc);
+    ArrayRef<f64> src = in_col_major;
+    if (out_col_major.data() == in_col_major.data()) {
+        src_copy.resize(in_col_major.size());
+        for (usize i = 0; i < in_col_major.size(); ++i) src_copy[i] = in_col_major[i];
+        src = src_copy.as_ref();
     }
 
     const i32 ir = as<i32>(in_r);
@@ -263,8 +291,8 @@ ImageStatus resize_3d(ArrayRef<f64> in_col_major, usize in_r, usize in_c, usize 
                     const f64 uy = u_coord(as<f64>(y) + 1.0, scale_y);
                     const i32 yi = mirror_idx(as<i32>(floor(uy + 0.5)) - 1, ir);
                     out_col_major[y + x * out_r + z * out_r * out_c] =
-                        in_col_major[as<usize>(yi) + as<usize>(xi) * in_r +
-                                     as<usize>(zi) * in_r * in_c];
+                        src[as<usize>(yi) + as<usize>(xi) * in_r +
+                            as<usize>(zi) * in_r * in_c];
                 }
             }
         }
@@ -287,7 +315,7 @@ ImageStatus resize_3d(ArrayRef<f64> in_col_major, usize in_r, usize in_c, usize 
                 f64 s = 0.0;
                 for (usize j = 0; j < cy.taps; ++j) {
                     const i32 yi = mirror_idx(first + as<i32>(j), ir);
-                    s += wrow[j] * in_col_major[as<usize>(yi) + x * in_r + z * in_r * in_c];
+                    s += wrow[j] * src[as<usize>(yi) + x * in_r + z * in_r * in_c];
                 }
                 tmp1[y + x * out_r + z * out_r * in_c] = s;
             }
@@ -329,6 +357,11 @@ ImageStatus resize_3d(ArrayRef<f64> in_col_major, usize in_r, usize in_c, usize 
 
 void rotate_2d_dims(usize in_h, usize in_w, f64 angle_deg, bool crop, usize& out_h,
                     usize& out_w) noexcept {
+    if (!is_finite(angle_deg)) {
+        out_h = in_h;
+        out_w = in_w;
+        return;
+    }
     f64 a = fmod(angle_deg, 360.0);
     if (a < 0.0) a += 360.0;
     const i64 kk = as<i64>(round(a / 90.0));
@@ -401,9 +434,14 @@ inline f64 sample_bicubic(ArrayRef<f64> in, usize in_h, usize in_w, usize in_off
 ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize channels,
                       f64 angle_deg, RotateInterp interp, bool crop, MutArrayRef<f64> out_col_major,
                       usize out_h, usize out_w) noexcept {
+    if (!is_finite(angle_deg) || mul3_overflows(in_h, in_w, channels) ||
+        mul3_overflows(out_h, out_w, channels)) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (in_col_major.size() != in_h * in_w * channels) return ImageStatus::kInvalidArgument;
     if (out_col_major.size() != out_h * out_w * channels) return ImageStatus::kInvalidArgument;
     if (out_h == 0 || out_w == 0 || channels == 0) return ImageStatus::kOk;
+    if (in_h == 0 || in_w == 0) return ImageStatus::kInvalidArgument;
 
     f64 a = fmod(angle_deg, 360.0);
     if (a < 0.0) a += 360.0;
@@ -494,6 +532,9 @@ ImageStatus rotate_2d(ArrayRef<f64> in_col_major, usize in_h, usize in_w, usize 
 
 ImageStatus translate_2d(ArrayRef<f64> in_col_major, usize h, usize w, usize channels, f64 dx,
                          f64 dy, MutArrayRef<f64> out_col_major) noexcept {
+    if (!is_finite(dx) || !is_finite(dy) || mul3_overflows(h, w, channels)) {
+        return ImageStatus::kInvalidArgument;
+    }
     if (in_col_major.size() != h * w * channels) return ImageStatus::kInvalidArgument;
     if (out_col_major.size() != h * w * channels) return ImageStatus::kInvalidArgument;
     if (h == 0 || w == 0 || channels == 0) return ImageStatus::kOk;

@@ -368,6 +368,9 @@ ImageStatus phantom_from_ellipses(ArrayRef<f64> ellipses_col_major, usize num_el
         const f64 phi = eat(k, 5) * kPi / 180.0;
         const f64 a2 = a_axis * a_axis;
         const f64 b2 = b_axis * b_axis;
+        if (!(a2 > 0.0) || !(b2 > 0.0) || !is_finite(a2) || !is_finite(b2)) {
+            continue;
+        }
         const f64 cos_p = cos(phi);
         const f64 sin_p = sin(phi);
         for (usize c = 0; c < n; ++c) {
@@ -571,6 +574,9 @@ ImageStatus normxcorr2(ArrayRef<f64> templ_col_major, usize th, usize tw,
     };
 
     const f64 inv_tn = 1.0 / as<f64>(tn);
+    Array<f64> denoms(a);
+    denoms.assign(out_h * out_w, 0.0);
+    f64 max_denom = 0.0;
     for (usize c = 0; c < out_w; ++c) {
         const usize c0 = (c + 1 >= tw) ? (c + 1 - tw) : 0;
         const usize c1 = min(c + 1, iw);
@@ -584,12 +590,23 @@ ImageStatus normxcorr2(ArrayRef<f64> templ_col_major, usize th, usize tw,
                 var_b = 0.0;
             }
             const f64 denom = sqrt(var_b * sumsq_a);
+            denoms[c * out_h + r] = denom;
+            if (denom > max_denom) {
+                max_denom = denom;
+            }
+        }
+    }
+    const f64 denom_tol = 1000.0 * Limits<f64>::kEpsilon * max(1.0, max_denom);
+    for (usize c = 0; c < out_w; ++c) {
+        for (usize r = 0; r < out_h; ++r) {
+            const usize out_idx = c * out_h + r;
+            const f64 denom = denoms[out_idx];
             const f64 num = fb_f[c * fft_h + r].re;
-            f64 v = (denom > 0.0) ? (num / denom) : 0.0;
+            f64 v = (denom > denom_tol) ? (num / denom) : 0.0;
             if (!is_finite(v)) {
                 v = 0.0;
             }
-            out_col_major[c * out_h + r] = v;
+            out_col_major[out_idx] = clamp(v, -1.0, 1.0);
         }
     }
     return ImageStatus::kOk;
@@ -702,6 +719,12 @@ ImageStatus deconvwnr_2d(ArrayRef<f64> img_col_major, usize height, usize width,
     const bool sx_scalar = (icorr_col_major.size() == 1);
     if ((!su_scalar && ncorr_col_major.size() != plane)
         || (!sx_scalar && icorr_col_major.size() != plane)) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if (su_scalar && (!is_finite(ncorr_col_major[0]) || ncorr_col_major[0] < 0.0)) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if (sx_scalar && (!is_finite(icorr_col_major[0]) || icorr_col_major[0] < 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
 

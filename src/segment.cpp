@@ -55,50 +55,9 @@ i32 fill_chamfer_steps(GeodesicMetric metric, StaticArray<ChamferStep, 8>& steps
 }
 
 template <typename T>
-void rdp_keep_recursive(const T* xs, const T* ys, i32 lo, i32 hi, T tol_eff,
-                        Array<i32>& out_indices) {
-    if (hi - lo <= 1) {
-        return;
-    }
-    const T x1 = xs[lo];
-    const T y1 = ys[lo];
-    const T x2 = xs[hi];
-    const T y2 = ys[hi];
-    const T dx = x2 - x1;
-    const T dy = y2 - y1;
-    const T d_node = sqrt(dx * dx + dy * dy);
-    constexpr f64 kEps = 2.220446049250313e-16;
-
-    T max_d = as<T>(-1);
-    i32 far_idx = -1;
-    for (i32 g = lo + 1; g < hi; ++g) {
-        const T xk = xs[g];
-        const T yk = ys[g];
-        T d = as<T>(0);
-        if (as<f64>(d_node) > kEps) {
-            const T det = (x2 * yk - y2 * xk) - x1 * (yk - y2) + y1 * (xk - x2);
-            d = abs(det) / d_node;
-        } else {
-            const T ex = xk - x1;
-            const T ey = yk - y1;
-            d = sqrt(ex * ex + ey * ey);
-        }
-        if (d > max_d) {
-            max_d = d;
-            far_idx = g;
-        }
-    }
-    if (max_d > tol_eff && far_idx > lo && far_idx < hi) {
-        rdp_keep_recursive(xs, ys, lo, far_idx, tol_eff, out_indices);
-        out_indices.push_back(far_idx);
-        rdp_keep_recursive(xs, ys, far_idx, hi, tol_eff, out_indices);
-    }
-}
-
-template <typename T>
 ImageStatus reducepoly_impl(ArrayRef<T> xs, ArrayRef<T> ys, f64 tolerance,
                             Array<i32>& out_kept_indices) {
-    if (xs.size() != ys.size() || tolerance < 0.0 || tolerance > 1.0) {
+    if (xs.size() != ys.size() || !is_finite(tolerance) || !(tolerance >= 0.0 && tolerance <= 1.0)) {
         return ImageStatus::kInvalidArgument;
     }
     out_kept_indices.clear();
@@ -126,9 +85,61 @@ ImageStatus reducepoly_impl(ArrayRef<T> xs, ArrayRef<T> ys, f64 tolerance,
     constexpr f64 kEps = 2.220446049250313e-16;
     const T tol_eff = as<T>((tolerance == 0.0) ? kEps : tolerance) * scaling;
 
-    out_kept_indices.push_back(0);
-    rdp_keep_recursive<T>(xs.data(), ys.data(), 0, as<i32>(n - 1), tol_eff, out_kept_indices);
-    out_kept_indices.push_back(as<i32>(n - 1));
+    // Iterative Ramer-Douglas-Peucker to avoid deep recursion stack overflow.
+    Array<u8> keep(n, u8{0});
+    keep[0] = 1;
+    keep[n - 1] = 1;
+    struct Span {
+        i32 lo;
+        i32 hi;
+    };
+    Array<Span> stack;
+    stack.reserve(64);
+    stack.push_back(Span{0, as<i32>(n - 1)});
+    while (!stack.empty()) {
+        const Span sp = stack.back();
+        stack.pop_back();
+        if (sp.hi - sp.lo <= 1) {
+            continue;
+        }
+        const T x1 = xs[as<usize>(sp.lo)];
+        const T y1 = ys[as<usize>(sp.lo)];
+        const T x2 = xs[as<usize>(sp.hi)];
+        const T y2 = ys[as<usize>(sp.hi)];
+        const T dx = x2 - x1;
+        const T dy = y2 - y1;
+        const T d_node = sqrt(dx * dx + dy * dy);
+
+        T max_d = as<T>(-1);
+        i32 far_idx = -1;
+        for (i32 g = sp.lo + 1; g < sp.hi; ++g) {
+            const T xk = xs[as<usize>(g)];
+            const T yk = ys[as<usize>(g)];
+            T d = as<T>(0);
+            if (as<f64>(d_node) > kEps) {
+                const T det = (x2 * yk - y2 * xk) - x1 * (yk - y2) + y1 * (xk - x2);
+                d = abs(det) / d_node;
+            } else {
+                const T ex = xk - x1;
+                const T ey = yk - y1;
+                d = sqrt(ex * ex + ey * ey);
+            }
+            if (d > max_d) {
+                max_d = d;
+                far_idx = g;
+            }
+        }
+        if (max_d > tol_eff && far_idx > sp.lo && far_idx < sp.hi) {
+            keep[as<usize>(far_idx)] = 1;
+            stack.push_back(Span{far_idx, sp.hi});
+            stack.push_back(Span{sp.lo, far_idx});
+        }
+    }
+    for (usize i = 0; i < n; ++i) {
+        if (keep[i] != 0) {
+            out_kept_indices.push_back(as<i32>(i));
+        }
+    }
     return ImageStatus::kOk;
 }
 
@@ -220,7 +231,8 @@ ImageStatus grayconnected_2d(ArrayRef<f64> img_col_major, usize height, usize wi
                              i32 seed_col, f64 tol, MutArrayRef<u8> out_col_major,
                              Allocator* alloc) {
     const usize total = height * width;
-    if (img_col_major.size() != total || out_col_major.size() != total) {
+    if (img_col_major.size() != total || out_col_major.size() != total || is_nan(tol) ||
+        tol < 0.0) {
         return ImageStatus::kInvalidArgument;
     }
     fill(out_col_major.begin(), out_col_major.end(), u8{0});
@@ -259,7 +271,7 @@ ImageStatus grayconnected_2d(ArrayRef<f64> img_col_major, usize height, usize wi
             if (out_col_major[nb]) {
                 continue;
             }
-            if (abs(img_col_major[nb] - seed_val) > tol) {
+            if (!(abs(img_col_major[nb] - seed_val) <= tol)) {
                 continue;
             }
             out_col_major[nb] = 1;
@@ -271,7 +283,8 @@ ImageStatus grayconnected_2d(ArrayRef<f64> img_col_major, usize height, usize wi
 
 ImageStatus graydiffweight_f64(ArrayRef<f64> img, f64 ref_gray_val, f64 rolloff_factor, f64 cutoff,
                                MutArrayRef<f64> out_weights) noexcept {
-    if (img.size() != out_weights.size() || !(rolloff_factor > 0.0) || !(cutoff >= 0.0)) {
+    if (img.size() != out_weights.size() || !is_finite(ref_gray_val) ||
+        !is_finite(rolloff_factor) || !(rolloff_factor > 0.0) || !(cutoff >= 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize n = img.size();
@@ -355,8 +368,9 @@ ImageStatus gradientweight_2d(ArrayRef<f64> img_col_major, usize height, usize w
     };
 
     const i32 rx = as<i32>(ceil(2.0 * sigma_x));
+    const i32 ry = as<i32>(ceil(2.0 * sigma_y));
     Array<f64> hx = build_dog(sigma_x, rx);
-    Array<f64> hy = build_dog(sigma_y, rx);
+    Array<f64> hy = build_dog(sigma_y, ry);
 
     Array<f64> gx(a);
     gx.resize(total);
@@ -486,7 +500,7 @@ ImageStatus regionfill_2d(ArrayRef<f64> img_col_major, ArrayRef<u8> mask_col_maj
 
     const usize max_iter = nu * 4 + 200;
     for (usize it = 0; it < max_iter; ++it) {
-        if (rdotr <= tol) {
+        if (!is_finite(rdotr) || rdotr <= tol) {
             break;
         }
         matvec(p.as_ref(), ap.as_mut_ref());
@@ -494,7 +508,7 @@ ImageStatus regionfill_2d(ArrayRef<f64> img_col_major, ArrayRef<u8> mask_col_maj
         for (usize i = 0; i < nu; ++i) {
             pap += p[i] * ap[i];
         }
-        if (pap <= 0.0) {
+        if (!is_finite(pap) || pap <= 0.0) {
             break;
         }
         const f64 alpha = rdotr / pap;
@@ -581,6 +595,11 @@ ImageStatus graydist_2d(ArrayRef<f64> img_col_major, usize height, usize width,
     const usize total = height * width;
     if (img_col_major.size() != total || out_dist_col_major.size() != total) {
         return ImageStatus::kInvalidArgument;
+    }
+    for (usize i = 0; i < total; ++i) {
+        if (img_col_major[i] < 0.0) {
+            return ImageStatus::kInvalidArgument;
+        }
     }
     const f64 inf = Limits<f64>::infinity();
     fill(out_dist_col_major.begin(), out_dist_col_major.end(), inf);

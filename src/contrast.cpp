@@ -49,15 +49,23 @@ void clip_histogram(f64* hist, i32 nbins, f64 clip_limit) noexcept {
     }
 
     i32 k = 0;
+    i32 stale = 0;
     while (total_excess > 0.0) {
+        const f64 before = total_excess;
         i32 step = as<i32>(floor(as<f64>(nbins) / total_excess));
         if (step < 1) step = 1;
         for (i32 m = k; m < nbins; m += step) {
             if (hist[m] < clip_limit) {
-                hist[m] += 1.0;
-                total_excess -= 1.0;
+                const f64 add = min(1.0, min(total_excess, clip_limit - hist[m]));
+                hist[m] += add;
+                total_excess -= add;
                 if (total_excess <= 0.0) break;
             }
+        }
+        if (total_excess >= before) {
+            if (++stale >= nbins) break;
+        } else {
+            stale = 0;
         }
         if (++k >= nbins) k = 0;
     }
@@ -89,6 +97,8 @@ f64 map_probability(f64 p, ClaheDistribution dist, f64 alpha, f64 out_min, f64 o
 }
 
 inline i32 level_of_unit(f64 u, i32 bins) noexcept {
+    if (is_nan(u) || u <= 0.0) return 0;
+    if (u >= 1.0) return bins - 1;
     i32 b = as<i32>(round(u * as<f64>(bins - 1)));
     if (b < 0) b = 0;
     if (b >= bins) b = bins - 1;
@@ -105,8 +115,9 @@ ImageStatus gaussian_filter_2d(ArrayRef<f64> in_col_major, usize height, usize w
         return ImageStatus::kInvalidArgument;
     }
     if (height == 0 || width == 0) return ImageStatus::kOk;
+    if (!is_finite(sigma) || sigma > 1e6) return ImageStatus::kInvalidArgument;
     if (filter_size <= 0) {
-        filter_size = 2 * as<i32>(ceil(2.0 * sigma)) + 1;
+        filter_size = (sigma > 0.0) ? (2 * as<i32>(ceil(2.0 * sigma)) + 1) : 3;
         if (filter_size < 3) filter_size = 3;
     }
     if ((filter_size % 2) == 0) filter_size += 1;
@@ -212,7 +223,7 @@ ImageStatus imadjust_unit(ArrayRef<f64> unit_in, f64 low_in, f64 high_in, f64 lo
     if (unit_in.size() != unit_out.size()) return ImageStatus::kInvalidArgument;
     if (is_nan(low_out)) low_out = 0.0;
     if (is_nan(high_out)) high_out = 1.0;
-    if (is_nan(gamma) || gamma <= 0.0) gamma = 1.0;
+    if (!is_finite(gamma) || gamma <= 0.0) gamma = 1.0;
 
     const f64 range = high_in - low_in;
     const f64 inv_range = (range != 0.0) ? (1.0 / range) : 0.0;
@@ -252,7 +263,7 @@ ImageStatus histeq_unit(ArrayRef<f64> unit_in, i32 nbins, MutArrayRef<f64> unit_
         cdf[as<usize>(i)] = acc / total;
     }
     for (usize i = 0; i < n; ++i) {
-        unit_out[i] = cdf[as<usize>(level_of_unit(unit_in[i], nbins))];
+        unit_out[i] = is_nan(unit_in[i]) ? kNaN : cdf[as<usize>(level_of_unit(unit_in[i], nbins))];
     }
     return ImageStatus::kOk;
 }
@@ -265,8 +276,11 @@ ImageStatus clahe_2d(ArrayRef<f64> img_col_major, usize height, usize width, i32
         out_col_major.size() != height * width) {
         return ImageStatus::kInvalidArgument;
     }
-    if (num_tiles_r < 2 || num_tiles_c < 2 || nbins < 2 ||
-        !(clip_limit >= 0.0 && clip_limit <= 1.0)) {
+    if (num_tiles_r < 2 || num_tiles_c < 2 || nbins < 2 || !is_finite(clip_limit) ||
+        !(clip_limit >= 0.0 && clip_limit <= 1.0) || !is_finite(class_lo) || !is_finite(class_hi)) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if (dist != ClaheDistribution::kUniform && (!is_finite(alpha) || !(alpha > 0.0))) {
         return ImageStatus::kInvalidArgument;
     }
 
@@ -318,6 +332,8 @@ ImageStatus clahe_2d(ArrayRef<f64> img_col_major, usize height, usize width, i32
 
     const f64 inv_span = as<f64>(nbins) / (in_max - in_min);
     auto bin_of = [&](f64 v) noexcept -> i32 {
+        if (is_nan(v) || v <= in_min) return 0;
+        if (v >= in_max) return nbins - 1;
         i32 b = as<i32>((v - in_min) * inv_span);
         if (b < 0) b = 0;
         if (b >= nbins) b = nbins - 1;
@@ -746,6 +762,9 @@ ImageStatus flatfield_2d(ArrayRef<f64> unit_planar_col_major, usize height, usiz
         return ImageStatus::kInvalidArgument;
     }
     if (plane == 0 || pages == 0) return ImageStatus::kOk;
+    if (!is_finite(sigma) || !(sigma > 0.0) || sigma > 1e6) {
+        return ImageStatus::kInvalidArgument;
+    }
 
     i32 filter_size = 2 * as<i32>(ceil(2.0 * sigma)) + 1;
     if (filter_size < 3) filter_size = 3;
@@ -814,29 +833,39 @@ ImageStatus wcodemat(ArrayRef<f64> x_col_major, usize height, usize width, usize
         }
         for (usize i = 0; i < n; ++i) out_col_major[i] = encode(vget(i), mn, mx);
     } else if (mode == WcodematMode::kRow) {
-        for (usize r = 0; r < height; ++r) {
-            f64 mn = Limits<f64>::infinity();
-            f64 mx = -Limits<f64>::infinity();
-            for (usize c = 0; c < width; ++c) {
-                const f64 v = vget(c * height + r);
-                if (v < mn) mn = v;
-                if (v > mx) mx = v;
-            }
-            for (usize c = 0; c < width; ++c) {
-                out_col_major[c * height + r] = encode(vget(c * height + r), mn, mx);
+        const usize plane = height * width;
+        for (usize p = 0; p < pages; ++p) {
+            const usize poff = p * plane;
+            for (usize r = 0; r < height; ++r) {
+                f64 mn = Limits<f64>::infinity();
+                f64 mx = -Limits<f64>::infinity();
+                for (usize c = 0; c < width; ++c) {
+                    const f64 v = vget(poff + c * height + r);
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                }
+                for (usize c = 0; c < width; ++c) {
+                    out_col_major[poff + c * height + r] =
+                        encode(vget(poff + c * height + r), mn, mx);
+                }
             }
         }
     } else {
-        for (usize c = 0; c < width; ++c) {
-            f64 mn = Limits<f64>::infinity();
-            f64 mx = -Limits<f64>::infinity();
-            for (usize r = 0; r < height; ++r) {
-                const f64 v = vget(c * height + r);
-                if (v < mn) mn = v;
-                if (v > mx) mx = v;
-            }
-            for (usize r = 0; r < height; ++r) {
-                out_col_major[c * height + r] = encode(vget(c * height + r), mn, mx);
+        const usize plane = height * width;
+        for (usize p = 0; p < pages; ++p) {
+            const usize poff = p * plane;
+            for (usize c = 0; c < width; ++c) {
+                f64 mn = Limits<f64>::infinity();
+                f64 mx = -Limits<f64>::infinity();
+                for (usize r = 0; r < height; ++r) {
+                    const f64 v = vget(poff + c * height + r);
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                }
+                for (usize r = 0; r < height; ++r) {
+                    out_col_major[poff + c * height + r] =
+                        encode(vget(poff + c * height + r), mn, mx);
+                }
             }
         }
     }
@@ -845,11 +874,13 @@ ImageStatus wcodemat(ArrayRef<f64> x_col_major, usize height, usize width, usize
 
 f64 shannon_entropy(ArrayRef<f64> hist_counts) noexcept {
     f64 total = 0.0;
-    for (usize i = 0; i < hist_counts.size(); ++i) total += hist_counts[i];
-    if (total <= 0.0) return 0.0;
+    for (usize i = 0; i < hist_counts.size(); ++i) {
+        if (hist_counts[i] > 0.0 && is_finite(hist_counts[i])) total += hist_counts[i];
+    }
+    if (!(total > 0.0)) return 0.0;
     f64 h = 0.0;
     for (usize i = 0; i < hist_counts.size(); ++i) {
-        if (hist_counts[i] <= 0.0) continue;
+        if (!(hist_counts[i] > 0.0) || !is_finite(hist_counts[i])) continue;
         const f64 p = hist_counts[i] / total;
         h -= p * (log(p) / kLn2);
     }

@@ -9,7 +9,12 @@ namespace keel::image {
 ImageStatus graycomatrix(ArrayRef<f64> img_col_major, usize height, usize width, i32 num_levels,
                          i32 off_r, i32 off_c, f64 g_low, f64 g_high, bool symmetric,
                          MutArrayRef<f64> out_glcm_col_major, Allocator* alloc) {
-    if (num_levels < 2 || !(g_high > g_low)) {
+    if (num_levels < 2 || !keel::is_finite(g_low) || !keel::is_finite(g_high) ||
+        !(g_high > g_low)) {
+        return ImageStatus::kInvalidArgument;
+    }
+    if ((height > 0 && width > Limits<usize>::kMax / height) ||
+        as<usize>(num_levels) > Limits<usize>::kMax / as<usize>(num_levels)) {
         return ImageStatus::kInvalidArgument;
     }
     const usize npix = height * width;
@@ -24,15 +29,22 @@ ImageStatus graycomatrix(ArrayRef<f64> img_col_major, usize height, usize width,
     ArenaTemp scratch = get_scratch(alloc);
     Array<i32> q(npix, -1, scratch.allocator());
     const f64 scale = as<f64>(num_levels) / (g_high - g_low);
+    const f64 max_lvl = as<f64>(num_levels - 1);
     for (usize i = 0; i < npix; ++i) {
         const f64 v = img_col_major[i];
         if (keel::is_nan(v)) {
             q[i] = -1;
             continue;
         }
-        i32 lvl = as<i32>(keel::floor((v - g_low) * scale));
-        if (lvl < 0) lvl = 0;
-        if (lvl >= num_levels) lvl = num_levels - 1;
+        const f64 scaled = keel::floor((v - g_low) * scale);
+        i32 lvl = 0;
+        if (scaled <= 0.0) {
+            lvl = 0;
+        } else if (scaled >= max_lvl) {
+            lvl = num_levels - 1;
+        } else {
+            lvl = as<i32>(scaled);
+        }
         q[i] = lvl;
     }
 
@@ -55,11 +67,16 @@ ImageStatus graycomatrix(ArrayRef<f64> img_col_major, usize height, usize width,
 }
 
 ImageStatus graycoprops(ArrayRef<f64> glcm_col_major, usize num_levels, GlcmProps& out) noexcept {
-    if (num_levels == 0u || glcm_col_major.size() < num_levels * num_levels) {
+    if (num_levels == 0u || num_levels > Limits<usize>::kMax / num_levels ||
+        glcm_col_major.size() < num_levels * num_levels) {
         return ImageStatus::kInvalidArgument;
     }
     f64 total = 0.0;
-    for (usize i = 0; i < num_levels * num_levels; ++i) total += glcm_col_major[i];
+    for (usize i = 0; i < num_levels * num_levels; ++i) {
+        const f64 c = glcm_col_major[i];
+        if (!(c >= 0.0) || !keel::is_finite(c)) return ImageStatus::kInvalidArgument;
+        total += c;
+    }
     if (!(total > 0.0)) return ImageStatus::kInvalidArgument;
 
     f64 mu_i = 0.0;
@@ -83,8 +100,8 @@ ImageStatus graycoprops(ArrayRef<f64> glcm_col_major, usize num_levels, GlcmProp
             var_j += dj * dj * p;
         }
     }
-    const f64 sigma_i = keel::sqrt(var_i);
-    const f64 sigma_j = keel::sqrt(var_j);
+    const f64 sigma_i = keel::sqrt(keel::max(0.0, var_i));
+    const f64 sigma_j = keel::sqrt(keel::max(0.0, var_j));
 
     f64 contrast = 0.0;
     f64 energy = 0.0;

@@ -12,9 +12,16 @@ inline usize lin3(usize r, usize c, usize p, usize h, usize w) noexcept {
     return r + c * h + p * h * w;
 }
 
+inline bool mul3_overflows(usize a, usize b, usize c) noexcept {
+    if (a == 0u || b == 0u || c == 0u) return false;
+    if (a > Limits<usize>::kMax / b) return true;
+    return (a * b) > Limits<usize>::kMax / c;
+}
+
 } // namespace
 
 ImageStatus fspecial3_average(usize h, usize w, usize p, MutArrayRef<f64> out_col_major) noexcept {
+    if (mul3_overflows(h, w, p)) return ImageStatus::kInvalidArgument;
     const usize n = h * w * p;
     if (n == 0u || out_col_major.size() < n) return ImageStatus::kInvalidArgument;
     const f64 v = 1.0 / as<f64>(n);
@@ -24,8 +31,10 @@ ImageStatus fspecial3_average(usize h, usize w, usize p, MutArrayRef<f64> out_co
 
 ImageStatus fspecial3_gaussian(usize h, usize w, usize p, f64 sr, f64 sc, f64 sp,
                                MutArrayRef<f64> out_col_major) noexcept {
+    if (mul3_overflows(h, w, p)) return ImageStatus::kInvalidArgument;
     const usize n = h * w * p;
-    if (n == 0u || out_col_major.size() < n || !(sr > 0.0) || !(sc > 0.0) || !(sp > 0.0)) {
+    if (n == 0u || out_col_major.size() < n || !keel::is_finite(sr) || !keel::is_finite(sc) ||
+        !keel::is_finite(sp) || !(sr > 0.0) || !(sc > 0.0) || !(sp > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     const f64 cy = 0.5 * (as<f64>(h) - 1.0);
@@ -53,10 +62,17 @@ ImageStatus fspecial3_gaussian(usize h, usize w, usize p, f64 sr, f64 sc, f64 sp
 
 ImageStatus fspecial3_ellipsoid(f64 ar, f64 ac, f64 ap, Array<f64>& out_col_major, usize& out_h,
                                 usize& out_w, usize& out_p, Allocator* alloc) {
-    if (!(ar > 0.0) || !(ac > 0.0) || !(ap > 0.0)) return ImageStatus::kInvalidArgument;
-    out_h = as<usize>(2.0 * keel::ceil(ar) + 1.0);
-    out_w = as<usize>(2.0 * keel::ceil(ac) + 1.0);
-    out_p = as<usize>(2.0 * keel::ceil(ap) + 1.0);
+    if (!keel::is_finite(ar) || !keel::is_finite(ac) || !keel::is_finite(ap) || !(ar > 0.0) ||
+        !(ac > 0.0) || !(ap > 0.0) || ar > 1e6 || ac > 1e6 || ap > 1e6) {
+        return ImageStatus::kInvalidArgument;
+    }
+    const usize h = as<usize>(2.0 * keel::ceil(ar) + 1.0);
+    const usize w = as<usize>(2.0 * keel::ceil(ac) + 1.0);
+    const usize p = as<usize>(2.0 * keel::ceil(ap) + 1.0);
+    if (mul3_overflows(h, w, p)) return ImageStatus::kInvalidArgument;
+    out_h = h;
+    out_w = w;
+    out_p = p;
     const usize n = out_h * out_w * out_p;
     out_col_major = Array<f64>(n, 0.0, alloc);
 
@@ -85,7 +101,8 @@ ImageStatus fspecial3_ellipsoid(f64 ar, f64 ac, f64 ap, Array<f64>& out_col_majo
 
 ImageStatus fspecial3_laplacian(f64 gamma1, f64 gamma2,
                                 MutArrayRef<f64> out_col_major_3x3x3) noexcept {
-    if (gamma1 < 0.0 || gamma2 < 0.0 || gamma1 + gamma2 > 1.0 || out_col_major_3x3x3.size() < 27u) {
+    if (!keel::is_finite(gamma1) || !keel::is_finite(gamma2) || !(gamma1 >= 0.0) ||
+        !(gamma2 >= 0.0) || gamma1 + gamma2 > 1.0 || out_col_major_3x3x3.size() < 27u) {
         return ImageStatus::kInvalidArgument;
     }
     const f64 face = 1.0 - gamma1 - gamma2;
@@ -113,8 +130,10 @@ ImageStatus fspecial3_laplacian(f64 gamma1, f64 gamma2,
 
 ImageStatus fspecial3_log(usize h, usize w, usize p, f64 sr, f64 sc, f64 sp,
                           MutArrayRef<f64> out_col_major, Allocator* alloc) {
+    if (mul3_overflows(h, w, p)) return ImageStatus::kInvalidArgument;
     const usize n = h * w * p;
-    if (n == 0u || out_col_major.size() < n || !(sr > 0.0) || !(sc > 0.0) || !(sp > 0.0)) {
+    if (n == 0u || out_col_major.size() < n || !keel::is_finite(sr) || !keel::is_finite(sc) ||
+        !keel::is_finite(sp) || !(sr > 0.0) || !(sc > 0.0) || !(sp > 0.0)) {
         return ImageStatus::kInvalidArgument;
     }
     ArenaTemp scratch = get_scratch(alloc);
@@ -177,6 +196,7 @@ ImageStatus fspecial3_gradient(bool sobel, Axis3D axis,
 
 ImageStatus fwind2(ArrayRef<f64> hd_col_major, ArrayRef<f64> win_col_major, usize height,
                    usize width, MutArrayRef<f64> out_col_major) noexcept {
+    if (height > 0u && width > Limits<usize>::kMax / height) return ImageStatus::kInvalidArgument;
     const usize n = height * width;
     if (hd_col_major.size() < n || win_col_major.size() < n || out_col_major.size() < n) {
         return ImageStatus::kInvalidArgument;

@@ -2,6 +2,7 @@
 
 #include "keel/format.h"
 #include "keel/math.h"
+#include "keel/ref.h"
 
 namespace {
 
@@ -13,14 +14,14 @@ i32 g_failures = 0;
 
 void check_true(bool cond, const char* expr, i32 line) {
     if (!cond) {
-        keel::eprintln("FAIL line {}: {}", line, expr);
+        keel::eprintln("FAIL line %d: %s", line, expr);
         ++g_failures;
     }
 }
 
 void check_near(f64 actual, f64 expected, f64 tol, const char* expr, i32 line) {
     if (!(keel::abs(actual - expected) <= tol)) {
-        keel::eprintln("FAIL line {}: {} (actual={}, expected={}, tol={})",
+        keel::eprintln("FAIL line %d: %s (actual=%.15g, expected=%.15g, tol=%.15g)",
                        line, expr, actual, expected, tol);
         ++g_failures;
     }
@@ -921,9 +922,687 @@ void test_features_and_segment() {
     CHECK(idx_out[0] == idx_out[2]);
 }
 
+void test_hardening_regressions() {
+    const f64 qnan = Limits<f64>::quiet_nan();
+    const f64 inf = Limits<f64>::infinity();
+
+    // 1. demosaic_mhc on minimal 2x2 image must not OOB-read in mirror1
+    {
+        const f64 m2[4] = {10.0, 20.0, 30.0, 40.0};
+        f64 r[4]{}, g[4]{}, b[4]{};
+        CHECK(im::demosaic_mhc(m2, 2, 2, im::BayerPattern::kRggb, 255.0, r, g, b) ==
+              im::ImageStatus::kOk);
+        for (usize i = 0; i < 4; ++i) {
+            CHECK(keel::is_finite(r[i]) && keel::is_finite(g[i]) && keel::is_finite(b[i]));
+        }
+        CHECK(im::demosaic_mhc(m2, 2, 2, im::BayerPattern::kRggb, qnan, r, g, b) ==
+              im::ImageStatus::kInvalidArgument);
+    }
+
+    // 2. imregionalmax_2d / imregionalmin_2d on [0, 1] floating-point image
+    {
+        // Col-major 3x3: rows [0.2 0.5 0.8; 0.3 0.9 0.4; 0.1 0.2 0.3]
+        const f64 f[9] = {0.2, 0.3, 0.1, 0.5, 0.9, 0.2, 0.8, 0.4, 0.3};
+        u8 rmax[9]{};
+        u8 rmin[9]{};
+        CHECK(im::imregionalmax_2d(f, 3, 3, 8, rmax) == im::ImageStatus::kOk);
+        usize max_cnt = 0;
+        for (usize i = 0; i < 9; ++i) max_cnt += rmax[i];
+        CHECK(max_cnt == 1 && rmax[4] == 1);
+
+        CHECK(im::imregionalmin_2d(f, 3, 3, 8, rmin) == im::ImageStatus::kOk);
+        CHECK(rmin[2] == 1); // (row 2, col 0) = 0.1
+        CHECK(rmin[4] == 0);
+    }
+
+    // 3. imfilter_2d full corr vs conv and replicate border parity
+    {
+        const f64 x[9] = {1, 4, 7, 2, 5, 8, 3, 6, 9};
+        const f64 k[4] = {1, 3, 2, 4};
+        f64 fc[16]{}, fv[16]{}, fr[16]{};
+        CHECK(im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, true, false, fc) ==
+              im::ImageStatus::kOk);
+        CHECK(im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, true, true, fv) ==
+              im::ImageStatus::kOk);
+        CHECK(im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kReplicate, 0.0, true, false, fr) ==
+              im::ImageStatus::kOk);
+        CHECK_NEAR(fc[0], 4.0, 1e-12);
+        CHECK_NEAR(fv[0], 1.0, 1e-12);
+        CHECK_NEAR(fr[0], 10.0, 1e-12);
+        CHECK(im::imfilter_2d(x, 3, 3, k, 0, 2, im::PadMode::kConstant, 0.0, false, false, fc) ==
+              im::ImageStatus::kInvalidArgument);
+    }
+
+    // 4. fsamp2_complex preserves full complex IFFT cross terms
+    {
+        const c64 hd[9] = {
+            c64(1.0, 1.0), c64(4.0, 0.0), c64(7.0, 0.0),
+            c64(2.0, 0.0), c64(5.0, -2.0), c64(8.0, 0.0),
+            c64(3.0, 0.0), c64(6.0, 0.0), c64(9.0, 0.0),
+        };
+        c64 out[9]{};
+        CHECK(im::fsamp2_complex(hd, 3, 3, out) == im::ImageStatus::kOk);
+        CHECK_NEAR(out[4].real(), 5.0, 1e-12);
+        CHECK_NEAR(out[4].imag(), -1.0 / 9.0, 1e-12);
+        CHECK_NEAR(out[0].real(), -0.0962250448649376, 1e-12);
+        CHECK_NEAR(out[0].imag(), -0.277777777777778, 1e-12);
+    }
+
+    // 5. imgradientxy_2d central border differences
+    {
+        const f64 a[12] = {1, 2, 3, 4, 5, 6, 9, 10, 11, 16, 17, 18};
+        f64 gx[12]{}, gy[12]{};
+        CHECK(im::imgradientxy_2d(a, 3, 4, im::GradientMethod::kCentral, gx, gy) ==
+              im::ImageStatus::kOk);
+        CHECK_NEAR(gx[0], 3.0, 1e-12);
+        CHECK_NEAR(gx[3], 4.0, 1e-12);
+        CHECK_NEAR(gx[6], 6.0, 1e-12);
+        CHECK_NEAR(gx[9], 7.0, 1e-12);
+    }
+
+    // 6. gradientweight_2d with anisotropic sigma_x != sigma_y
+    {
+        keel::Array<f64> g(8 * 8, 0.0);
+        for (usize c = 0; c < 8; ++c) {
+            for (usize r = 0; r < 8; ++r) {
+                g[c * 8 + r] = as<f64>(r) * 0.1 + as<f64>(c) * 0.05;
+            }
+        }
+        keel::Array<f64> w1(8 * 8, 0.0);
+        CHECK(im::gradientweight_2d(g.as_ref(), 8, 8, 2.5, 0.5, 1.5, 0.05, w1.as_mut_ref()) ==
+              im::ImageStatus::kOk);
+        for (usize i = 0; i < 64; ++i) {
+            CHECK(keel::is_finite(w1[i]) && w1[i] >= 1e-3 && w1[i] <= 1.0);
+        }
+    }
+
+    // 7. wcodemat multi-page row/col encoding
+    {
+        f64 x[8] = {1, 2, 3, 4, 10, 20, 30, 40};
+        f64 out[8]{};
+        CHECK(im::wcodemat(x, 2, 2, 2, 16, im::WcodematMode::kRow, false, out) ==
+              im::ImageStatus::kOk);
+        CHECK_NEAR(out[4], 1.0, 1e-12);
+        CHECK_NEAR(out[6], 16.0, 1e-12);
+        CHECK(im::wcodemat(x, 2, 2, 2, 16, im::WcodematMode::kCol, false, out) ==
+              im::ImageStatus::kOk);
+        CHECK_NEAR(out[4], 1.0, 1e-12);
+        CHECK_NEAR(out[5], 16.0, 1e-12);
+    }
+
+    // 8. clahe_2d with clip_limit == 0.0 must terminate cleanly
+    {
+        keel::Array<f64> in(16 * 16, 0.5);
+        in[0] = 0.0;
+        in[1] = 1.0;
+        keel::Array<f64> out(16 * 16, 0.0);
+        CHECK(im::clahe_2d(in.as_ref(), 16, 16, 2, 2, 0.0, 64, im::ClaheDistribution::kUniform,
+                           0.4, 0.0, 1.0, false, out.as_mut_ref()) == im::ImageStatus::kOk);
+        for (usize i = 0; i < 256; ++i) CHECK(keel::is_finite(out[i]));
+        CHECK(im::clahe_2d(in.as_ref(), 16, 16, 2, 2, 0.01, 64, im::ClaheDistribution::kRayleigh,
+                           0.0, 0.0, 1.0, false, out.as_mut_ref()) ==
+              im::ImageStatus::kInvalidArgument);
+    }
+
+    // 9. In-place aliasing safety (fibermetric_2d, morph_erode_u8, medfilt2_f64, resize_2d)
+    {
+        keel::Array<f64> fb(16 * 16, 0.0);
+        for (usize c = 0; c < 16; ++c) fb[c * 16 + 8] = 1.0;
+        keel::Array<f64> fb_ref(16 * 16, 0.0);
+        const f64 thick[1] = {4.0};
+        CHECK(im::fibermetric_2d(fb.as_ref(), 16, 16, thick, 0.5, true, fb_ref.as_mut_ref()) ==
+              im::ImageStatus::kOk);
+        CHECK(im::fibermetric_2d(fb.as_ref(), 16, 16, thick, 0.5, true, fb.as_mut_ref()) ==
+              im::ImageStatus::kOk);
+        for (usize i = 0; i < 256; ++i) CHECK_NEAR(fb[i], fb_ref[i], 1e-15);
+
+        u8 mu[9] = {10, 20, 30, 40, 50, 60, 70, 80, 90};
+        u8 mu_ref[9]{};
+        const u8 se[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+        CHECK(im::morph_erode_u8(mu, 3, 3, se, 3, 3, mu_ref) == im::ImageStatus::kOk);
+        CHECK(im::morph_erode_u8(mu, 3, 3, se, 3, 3, mu) == im::ImageStatus::kOk);
+        for (usize i = 0; i < 9; ++i) CHECK(mu[i] == mu_ref[i]);
+
+        f64 mf[9] = {1, 9, 2, 8, 3, 7, 4, 6, 5};
+        f64 mf_ref[9]{};
+        CHECK(im::medfilt2_f64(mf, 3, 3, 3, 3, mf_ref) == im::ImageStatus::kOk);
+        CHECK(im::medfilt2_f64(mf, 3, 3, 3, 3, mf) == im::ImageStatus::kOk);
+        for (usize i = 0; i < 9; ++i) CHECK_NEAR(mf[i], mf_ref[i], 1e-15);
+    }
+
+    // 10. NaN / negative / degenerate input guards
+    {
+        const im::Color3 nan_hsv = im::rgb_to_hsv(qnan, 0.5, 0.5);
+        CHECK(keel::is_nan(nan_hsv.c0));
+        const im::Color3 nan_rgb = im::hsv_to_rgb(inf, 0.5, 0.5);
+        CHECK(keel::is_nan(nan_rgb.c0));
+
+        // padarray 1-page constant padding along 3rd dim
+        const f64 p1[4] = {1, 2, 3, 4};
+        f64 pout[12]{};
+        CHECK(im::padarray_f64(p1, 2, 2, 1, 0, 0, 0, 0, 1, 1, im::PadMode::kConstant, 7.0, pout) ==
+              im::ImageStatus::kOk);
+        CHECK_NEAR(pout[0], 7.0, 1e-12);
+        CHECK_NEAR(pout[4], 1.0, 1e-12);
+        CHECK_NEAR(pout[8], 7.0, 1e-12);
+
+        // graydist rejects negative weights
+        const f64 neg_img[4] = {1.0, -0.5, 1.0, 1.0};
+        f64 gd[4]{};
+        const usize s0[1] = {0};
+        CHECK(im::graydist_2d(neg_img, 2, 2, s0, im::GeodesicMetric::kCityblock, gd) ==
+              im::ImageStatus::kInvalidArgument);
+
+        // grayconnected rejects NaN tol and skips NaN neighbors
+        const f64 nan_img[4] = {0.5, qnan, 0.5, 0.5};
+        u8 gc[4]{};
+        CHECK(im::grayconnected_2d(nan_img, 2, 2, 0, 0, qnan, gc) ==
+              im::ImageStatus::kInvalidArgument);
+        CHECK(im::grayconnected_2d(nan_img, 2, 2, 0, 0, 0.1, gc) == im::ImageStatus::kOk);
+        CHECK(gc[0] == 1 && gc[1] == 0 && gc[2] == 1);
+
+        // reducepoly rejects NaN tol & runs iteratively on long polyline
+        keel::Array<f64> rx(4096, 0.0), ry(4096, 0.0);
+        for (usize i = 0; i < 4096; ++i) {
+            rx[i] = as<f64>(i);
+            ry[i] = keel::sin(as<f64>(i) * 0.01);
+        }
+        keel::Array<i32> kept;
+        CHECK(im::reducepoly_f64(rx.as_ref(), ry.as_ref(), qnan, kept) ==
+              im::ImageStatus::kInvalidArgument);
+        CHECK(im::reducepoly_f64(rx.as_ref(), ry.as_ref(), 0.01, kept) == im::ImageStatus::kOk);
+        CHECK(kept.size() >= 2 && kept[0] == 0 && kept.back() == 4095);
+
+        // graycomatrix handles huge/Inf values without UB
+        const f64 huge[4] = {-inf, 0.5, 1e200, inf};
+        f64 glcm[16]{};
+        CHECK(im::graycomatrix(huge, 2, 2, 4, 0, 1, 0.0, 1.0, false, glcm) == im::ImageStatus::kOk);
+
+        // morph_erode_f64 preserves NaN when all covered pixels are NaN, ignores single NaN
+        const f64 fnan[4] = {qnan, qnan, 2.0, 3.0};
+        const u8 se1[1] = {1};
+        f64 fe[4]{};
+        CHECK(im::morph_erode_f64(fnan, 2, 2, se1, 1, 1, fe) == im::ImageStatus::kOk);
+        CHECK(keel::is_nan(fe[0]) && fe[2] == 2.0);
+
+        // imnlmfilt_2d rejects dos == 0.0
+        keel::Array<f64> nlm_in(21 * 21, 0.5), nlm_out(21 * 21, 0.0);
+        f64 est = 0.0;
+        CHECK(im::imnlmfilt_2d(nlm_in.as_ref(), 21, 21, 0.0, 7, 3, nlm_out.as_mut_ref(), est) ==
+              im::ImageStatus::kInvalidArgument);
+
+        // region_component_attrs empty component & OOB bounds check
+        const i32 pr[1] = {5};
+        const i32 pc[1] = {0};
+        const usize offs[3] = {0, 0, 1};
+        const f64 mk[4] = {1, 2, 3, 4};
+        f64 vals[2]{};
+        CHECK(im::region_component_attrs(pr, pc, offs, 2, 2, 8, im::RegionAttr::kMeanIntensity, mk,
+                                         vals) == im::ImageStatus::kInvalidArgument);
+
+        // houghlines_2d rejects degenerate rho
+        const u8 bw4[4] = {1, 1, 1, 1};
+        const f64 th1[1] = {0.0};
+        const f64 bad_rho[2] = {1.0, 1.0};
+        const im::BoundaryPoint pk[1] = {{0, 0}};
+        keel::Array<im::HoughLine> hl;
+        CHECK(im::houghlines_2d(bw4, 2, 2, th1, bad_rho, pk, 5.0, 1.0, hl) ==
+              im::ImageStatus::kInvalidArgument);
+    }
+}
+
+void dump_ref_vec(const char* key, ArrayRef<f64> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%.15g", v[i]);
+    }
+    keel::println("");
+}
+
+void dump_ref_u8(const char* key, ArrayRef<u8> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%u", as<u32>(v[i]));
+    }
+    keel::println("");
+}
+
+void dump_reference_outputs() {
+    // 1. Color conversions
+    {
+        const f64 r[3] = {0.2, 0.75, 0.9};
+        const f64 g[3] = {0.5, 0.25, 0.1};
+        const f64 b[3] = {0.8, 0.6, 0.3};
+        f64 gr[3]{}, c0[3]{}, c1[3]{}, c2[3]{};
+        (void)im::rgb_to_gray_planar(r, g, b, gr);
+        dump_ref_vec("rgb2gray", gr);
+
+        (void)im::rgb_to_hsv_planar(r, g, b, c0, c1, c2);
+        f64 hsv_all[9] = {c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]};
+        dump_ref_vec("rgb2hsv", hsv_all);
+
+        f64 rr[3]{}, gg[3]{}, bb[3]{};
+        (void)im::hsv_to_rgb_planar(c0, c1, c2, rr, gg, bb);
+        f64 hsv_rt[9] = {rr[0], rr[1], rr[2], gg[0], gg[1], gg[2], bb[0], bb[1], bb[2]};
+        dump_ref_vec("hsv2rgb", hsv_rt);
+
+        const im::Color3 yiq = im::rgb_to_ntsc(0.2, 0.5, 0.8);
+        const f64 yiq_v[3] = {yiq.c0, yiq.c1, yiq.c2};
+        dump_ref_vec("rgb2ntsc", yiq_v);
+        const im::Color3 yiq_rgb = im::ntsc_to_rgb(0.5, 0.2, -0.1);
+        const f64 yiq_rgb_v[3] = {yiq_rgb.c0, yiq_rgb.c1, yiq_rgb.c2};
+        dump_ref_vec("ntsc2rgb", yiq_rgb_v);
+
+        (void)im::rgb_to_ycbcr_planar(r, g, b, c0, c1, c2);
+        f64 ycbcr_all[9] = {c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]};
+        dump_ref_vec("rgb2ycbcr", ycbcr_all);
+        (void)im::ycbcr_to_rgb_planar(c0, c1, c2, rr, gg, bb);
+        f64 ycbcr_rt[9] = {rr[0], rr[1], rr[2], gg[0], gg[1], gg[2], bb[0], bb[1], bb[2]};
+        dump_ref_vec("ycbcr2rgb", ycbcr_rt);
+
+        (void)im::rgb_to_xyz_planar(r, g, b, c0, c1, c2);
+        f64 xyz_all[9] = {c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]};
+        dump_ref_vec("rgb2xyz", xyz_all);
+
+        (void)im::rgb_to_lab_planar(r, g, b, c0, c1, c2);
+        f64 lab_all[9] = {c0[0], c0[1], c0[2], c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]};
+        dump_ref_vec("rgb2lab", lab_all);
+    }
+
+    // 2. Quality metrics: mse, psnr, mean2, std2, ssim
+    {
+        keel::Array<f64> a(16 * 16, 0.0), b(16 * 16, 0.0);
+        for (usize i = 0; i < 256; ++i) {
+            a[i] = keel::sin(as<f64>(i + 1)) * 0.5 + 0.5;
+            b[i] = a[i] * 0.9 + 0.05;
+        }
+        const f64 qv[5] = {
+            im::mse(a.as_ref(), b.as_ref()),
+            im::psnr(a.as_ref(), b.as_ref(), 1.0),
+            im::mean2(a.as_ref()),
+            im::std2(a.as_ref()),
+            im::ssim(a.as_ref(), b.as_ref(), 16, 16, 1.0),
+        };
+        dump_ref_vec("quality", qv);
+    }
+
+    // 3. Otsu threshold
+    {
+        const f64 hc[8] = {10, 40, 20, 2, 1, 15, 50, 12};
+        const im::OtsuResult o = im::otsu_threshold(hc);
+        const f64 ov[2] = {o.threshold, o.effectiveness};
+        dump_ref_vec("otsu", ov);
+    }
+
+    // 4. Demosaic 6x6 RGGB
+    {
+        f64 m[36]{}, r[36]{}, g[36]{}, b[36]{};
+        for (usize i = 0; i < 36; ++i) m[i] = as<f64>(i + 1) * 5.0;
+        (void)im::demosaic_mhc(m, 6, 6, im::BayerPattern::kRggb, 255.0, r, g, b);
+        const f64 interior[6] = {r[14], r[21], g[14], g[21], b[14], b[21]};
+        dump_ref_vec("demosaic_interior", interior);
+    }
+
+    // 5. Texture: graycomatrix + graycoprops
+    {
+        const f64 ti[16] = {0.0, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 1.0,
+                            0.5, 0.75, 1.0, 0.0, 0.75, 1.0, 0.0, 0.25};
+        f64 glcm[16]{};
+        (void)im::graycomatrix(ti, 4, 4, 4, 0, 1, 0.0, 1.0, false, glcm);
+        dump_ref_vec("glcm", glcm);
+        im::GlcmProps gp{};
+        (void)im::graycoprops(glcm, 4, gp);
+        const f64 gpv[4] = {gp.contrast, gp.correlation, gp.energy, gp.homogeneity};
+        dump_ref_vec("glcm_props", gpv);
+    }
+
+    // 6. Chromadapt (Bradford & Von Kries)
+    {
+        const f64 r[3] = {0.3, 0.6, 0.8};
+        const f64 g[3] = {0.4, 0.5, 0.2};
+        const f64 b[3] = {0.5, 0.2, 0.7};
+        f64 or1[3]{}, og1[3]{}, ob1[3]{};
+        (void)im::chromadapt_planar(r, g, b, im::Color3{0.8, 0.7, 0.6},
+                                    im::ChromAdaptMethod::kBradford, im::RgbColorSpace::kSrgb,
+                                    or1, og1, ob1);
+        const f64 ca1[9] = {or1[0], or1[1], or1[2], og1[0], og1[1], og1[2], ob1[0], ob1[1], ob1[2]};
+        dump_ref_vec("chromadapt_bradford", ca1);
+    }
+
+    // 7. Illumination + imcolordiff
+    {
+        const f64 r[4] = {0.2, 0.6, 0.4, 0.8};
+        const f64 g[4] = {0.1, 0.5, 0.3, 0.7};
+        const f64 b[4] = {0.3, 0.7, 0.5, 0.9};
+        im::Color3 iw{}, ig1{}, ig2{};
+        (void)im::illumwhite_planar(r, g, b, ArrayRef<u8>{}, 0.0, iw);
+        (void)im::illumgray_planar(r, g, b, ArrayRef<u8>{}, 0.0, 0.0, 1.0, ig1);
+        (void)im::illumgray_planar(r, g, b, ArrayRef<u8>{}, 0.0, 0.0, 2.0, ig2);
+        const f64 ilv[9] = {iw.c0, iw.c1, iw.c2, ig1.c0, ig1.c1, ig1.c2, ig2.c0, ig2.c1, ig2.c2};
+        dump_ref_vec("illum", ilv);
+
+        const f64 de[3] = {
+            im::delta_e_94(im::Color3{50.0, 20.0, 30.0}, im::Color3{55.0, 25.0, 22.0}),
+            im::delta_e_2000(im::Color3{50.0, 20.0, 30.0}, im::Color3{55.0, 25.0, 22.0}),
+            im::delta_e_2000(im::Color3{50.0, 20.0, 30.0}, im::Color3{55.0, 25.0, 22.0},
+                             1.0, 1.0, 1.0, 0.048, 0.014),
+        };
+        dump_ref_vec("colordiff", de);
+    }
+
+    // 8. Geometric: resize_2d, rotate_2d, pyramid
+    {
+        f64 g4[16]{};
+        for (usize i = 0; i < 16; ++i) g4[i] = as<f64>(i + 1);
+        f64 r_cub[36]{};
+        (void)im::resize_2d(g4, 4, 4, 1, 6, 6, 1.5, 1.5, im::ResizeKernel::kCubic, true, r_cub);
+        dump_ref_vec("resize_cubic", r_cub);
+
+        usize oh = 0, ow = 0;
+        im::rotate_2d_dims(4, 4, 30.0, false, oh, ow);
+        keel::Array<f64> rot(oh * ow, 0.0);
+        (void)im::rotate_2d(g4, 4, 4, 1, 30.0, im::RotateInterp::kBilinear, false,
+                            rot.as_mut_ref(), oh, ow);
+        dump_ref_vec("rotate_30_bilin", rot.as_ref());
+
+        f64 pyr_r[4]{};
+        (void)im::pyramid_reduce_2d(g4, 4, 4, 1, pyr_r);
+        dump_ref_vec("pyr_reduce", pyr_r);
+    }
+
+    // 9. 2D FIR: fsamp2 (real & complex), ftrans2, fwind1, fwind2
+    {
+        const f64 hd_r[9] = {0, 0, 0, 0, 1, 0, 0, 0, 0};
+        f64 fs_r[9]{};
+        (void)im::fsamp2_real(hd_r, 3, 3, fs_r);
+        dump_ref_vec("fsamp2_real", fs_r);
+
+        const c64 hd_c[9] = {
+            c64(1.0, 1.0), c64(4.0, 0.0), c64(7.0, 0.0),
+            c64(2.0, 0.0), c64(5.0, -2.0), c64(8.0, 0.0),
+            c64(3.0, 0.0), c64(6.0, 0.0), c64(9.0, 0.0),
+        };
+        c64 fs_c[9]{};
+        (void)im::fsamp2_complex(hd_c, 3, 3, fs_c);
+        f64 fs_c_flat[18]{};
+        for (usize i = 0; i < 9; ++i) {
+            fs_c_flat[2 * i] = fs_c[i].real();
+            fs_c_flat[2 * i + 1] = fs_c[i].imag();
+        }
+        dump_ref_vec("fsamp2_complex", fs_c_flat);
+
+        const f64 b1[5] = {0.1, 0.2, 0.4, 0.2, 0.1};
+        keel::Array<f64> ft;
+        usize fh = 0, fw = 0;
+        (void)im::ftrans2(b1, ArrayRef<f64>{}, 0, 0, ft, fh, fw);
+        dump_ref_vec("ftrans2", ft.as_ref());
+    }
+
+    // 10. Box / guided filter & contrast (stretchlim, imadjust, multithresh, entropy)
+    {
+        f64 a[25]{};
+        for (usize i = 0; i < 25; ++i) a[i] = as<f64>(i + 1) / 25.0;
+        f64 bf[25]{}, gf[25]{};
+        (void)im::box_filter_2d_replicate(a, 5, 5, 3, bf);
+        dump_ref_vec("imboxfilt", bf);
+        (void)im::guided_filter_gray(a, ArrayRef<f64>{}, 5, 5, 3, 0.01, gf);
+        dump_ref_vec("imguidedfilter", gf);
+
+        f64 sl[2]{};
+        (void)im::stretchlim_unit(a, 25, 1, 65536, 0.01, 0.99, sl);
+        dump_ref_vec("stretchlim", sl);
+
+        f64 adj[25]{};
+        (void)im::imadjust_unit(a, 0.2, 0.8, 0.1, 0.9, 1.5, adj);
+        dump_ref_vec("imadjust", adj);
+
+        f64 mt2[2]{};
+        f64 mteff = 0.0;
+        (void)im::multithresh_otsu(a, 2, false, mt2, mteff);
+        const f64 mt_out[3] = {mt2[0], mt2[1], mteff};
+        dump_ref_vec("multithresh2", mt_out);
+    }
+
+    // 11. Morphology: imerode, imdilate, imreconstruct, imfill, imregionalmax, imhmax, imhmin
+    {
+        const f64 a[16] = {0.1, 0.4, 0.2, 0.3, 0.5, 0.9, 0.6, 0.2,
+                           0.3, 0.7, 0.8, 0.4, 0.2, 0.3, 0.5, 0.1};
+        const u8 se[9] = {0, 1, 0, 1, 1, 1, 0, 1, 0};
+        f64 er[16]{}, di[16]{}, hm[16]{}, hmin[16]{};
+        (void)im::morph_erode_f64(a, 4, 4, se, 3, 3, er);
+        (void)im::morph_dilate_f64(a, 4, 4, se, 3, 3, di);
+        dump_ref_vec("imerode_f64", er);
+        dump_ref_vec("imdilate_f64", di);
+
+        u8 rmax[16]{}, rmin[16]{};
+        (void)im::imregionalmax_2d(a, 4, 4, 8, rmax);
+        (void)im::imregionalmin_2d(a, 4, 4, 8, rmin);
+        dump_ref_u8("imregionalmax", rmax);
+        dump_ref_u8("imregionalmin", rmin);
+
+        (void)im::imhmax_2d(a, 4, 4, 0.25, 8, hm);
+        (void)im::imhmin_2d(a, 4, 4, 0.25, 8, hmin);
+        dump_ref_vec("imhmax", hm);
+        dump_ref_vec("imhmin", hmin);
+
+        const u8 hole[25] = {
+            0, 0, 0, 0, 0,
+            0, 1, 1, 1, 0,
+            0, 1, 0, 1, 0,
+            0, 1, 1, 1, 0,
+            0, 0, 0, 0, 0,
+        };
+        u8 filled[25]{};
+        (void)im::imfill_holes_binary(hole, 5, 5, 4, filled);
+        dump_ref_u8("imfill_bin", filled);
+    }
+
+    // 12. Filters: fspecial, imfilter, medfilt2, ordfilt2, stdfilt, rangefilt, wiener2, convmtx2, freqz2
+    {
+        im::Kernel2D kg, kl, kd, km, ku;
+        (void)im::fspecial_gaussian(5, 5, 1.2, kg);
+        (void)im::fspecial_log(5, 5, 0.8, kl);
+        (void)im::fspecial_disk(2.5, kd);
+        (void)im::fspecial_motion(7.0, 35.0, km);
+        (void)im::fspecial_unsharp(0.3, ku);
+        dump_ref_vec("fspecial_gauss", kg.data_col_major.as_ref());
+        dump_ref_vec("fspecial_log", kl.data_col_major.as_ref());
+        dump_ref_vec("fspecial_disk", kd.data_col_major.as_ref());
+        dump_ref_vec("fspecial_motion", km.data_col_major.as_ref());
+        dump_ref_vec("fspecial_unsharp", ku.data_col_major.as_ref());
+
+        const f64 x[9] = {1, 4, 7, 2, 5, 8, 3, 6, 9};
+        const f64 k[4] = {1, 3, 2, 4};
+        f64 f_fc[16]{}, f_fv[16]{}, f_fr[16]{}, f_sc[9]{}, f_sv[9]{};
+        (void)im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, true, false, f_fc);
+        (void)im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, true, true, f_fv);
+        (void)im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kReplicate, 0.0, true, false, f_fr);
+        (void)im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, false, false, f_sc);
+        (void)im::imfilter_2d(x, 3, 3, k, 2, 2, im::PadMode::kConstant, 0.0, false, true, f_sv);
+        dump_ref_vec("imfilter_full_corr", f_fc);
+        dump_ref_vec("imfilter_full_conv", f_fv);
+        dump_ref_vec("imfilter_full_repl", f_fr);
+        dump_ref_vec("imfilter_same_corr", f_sc);
+        dump_ref_vec("imfilter_same_conv", f_sv);
+
+        f64 a16[16]{};
+        for (usize i = 0; i < 16; ++i) a16[i] = keel::sin(as<f64>(i + 1) * 0.7) * 5.0 + 10.0;
+        f64 m2[16]{}, sf[16]{}, rf[16]{}, w2[16]{};
+        const u8 dom9[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+        (void)im::medfilt2_f64(a16, 4, 4, 3, 3, m2);
+        (void)im::stdfilt_2d(a16, 4, 4, dom9, 3, 3, sf);
+        (void)im::rangefilt_2d(a16, 4, 4, dom9, 3, 3, rf);
+        f64 wnoise = 0.0;
+        (void)im::wiener2_2d(a16, 4, 4, 3, 3, Limits<f64>::quiet_nan(), w2, wnoise);
+        dump_ref_vec("medfilt2", m2);
+        dump_ref_vec("stdfilt", sf);
+        dump_ref_vec("rangefilt", rf);
+        dump_ref_vec("wiener2", w2);
+        const f64 wn[1] = {wnoise};
+        dump_ref_vec("wiener2_noise", wn);
+
+        f64 cm2[16 * 9]{};
+        (void)im::convmtx2_f64(k, 2, 2, 3, 3, cm2);
+        dump_ref_vec("convmtx2", ArrayRef<f64>(cm2, 16 * 9));
+    }
+
+    // 13. Transforms & deconvolution
+    {
+        f64 dm[16]{};
+        (void)im::dct_matrix(4, dm);
+        dump_ref_vec("dctmtx", dm);
+
+        f64 a16[16]{}, d2[16]{}, id2[16]{};
+        for (usize i = 0; i < 16; ++i) a16[i] = as<f64>(i + 1) * 0.5;
+        (void)im::dct_2d(a16, 4, 4, d2);
+        (void)im::idct_2d(d2, 4, 4, id2);
+        dump_ref_vec("dct2", d2);
+        dump_ref_vec("idct2", id2);
+
+        f64 sat[25]{};
+        (void)im::integral_image_2d(a16, 4, 4, sat);
+        dump_ref_vec("integral2d", sat);
+
+        const f64 t2[4] = {1, 3, 2, 4};
+        f64 b5[25]{};
+        for (usize i = 0; i < 25; ++i) b5[i] = 0.3;
+        b5[1 * 5 + 1] = 0.1; b5[2 * 5 + 1] = 0.2;
+        b5[1 * 5 + 2] = 0.3; b5[2 * 5 + 2] = 0.4;
+        f64 nxc[36]{};
+        (void)im::normxcorr2(t2, 2, 2, b5, 5, 5, nxc);
+        dump_ref_vec("normxcorr2", nxc);
+
+        im::Kernel2D psf;
+        (void)im::fspecial_gaussian(3, 3, 0.8, psf);
+        c64 otf[16]{};
+        (void)im::psf_to_otf(psf.data_col_major.as_ref(), 3, 3, 4, 4, otf);
+        f64 otf_flat[32]{};
+        for (usize i = 0; i < 16; ++i) {
+            otf_flat[2 * i] = otf[i].real();
+            otf_flat[2 * i + 1] = otf[i].imag();
+        }
+        dump_ref_vec("psf2otf", otf_flat);
+
+        keel::Array<f64> et_in(8 * 8, 0.0), et_out(8 * 8, 0.0);
+        for (usize i = 0; i < 64; ++i) et_in[i] = keel::cos(as<f64>(i) * 0.3) * 0.5 + 0.5;
+        (void)im::edgetaper_2d(et_in.as_ref(), 8, 8, psf.data_col_major.as_ref(), 3, 3,
+                               et_out.as_mut_ref());
+        dump_ref_vec("edgetaper", et_out.as_ref());
+
+        f64 wnr_out[64]{};
+        const f64 ns[1] = {0.01};
+        const f64 ic[1] = {1.0};
+        (void)im::deconvwnr_2d(et_in.as_ref(), 8, 8, psf.data_col_major.as_ref(), 3, 3, ns, ic,
+                               wnr_out);
+        dump_ref_vec("deconvwnr", wnr_out);
+    }
+
+    // 14. Regions: bwlabel, bwperim, bweuler, bwdist, regionprops
+    {
+        const u8 bw[25] = {
+            1, 1, 0, 0, 0,
+            1, 1, 0, 1, 1,
+            0, 0, 0, 1, 1,
+            0, 1, 1, 0, 0,
+            0, 1, 1, 0, 1,
+        };
+        i32 lab[25]{};
+        i32 nlab = 0;
+        (void)im::bwlabel_2d(bw, 5, 5, 8, lab, nlab);
+        f64 lab_f[25]{};
+        for (usize i = 0; i < 25; ++i) lab_f[i] = as<f64>(lab[i]);
+        dump_ref_vec("bwlabel8", lab_f);
+
+        u8 per[25]{};
+        (void)im::bwperim_2d(bw, 5, 5, 4, per);
+        dump_ref_u8("bwperim4", per);
+
+        f64 eu8 = 0.0, eu4 = 0.0;
+        (void)im::bweuler_2d(bw, 5, 5, 8, eu8);
+        (void)im::bweuler_2d(bw, 5, 5, 4, eu4);
+        const f64 euv[2] = {eu8, eu4};
+        dump_ref_vec("bweuler", euv);
+
+        f64 dist[25]{};
+        (void)im::bwdist_euclidean_2d(bw, 5, 5, dist);
+        dump_ref_vec("bwdist", dist);
+
+        keel::Array<im::RegionProps2D> props;
+        (void)im::region_props_2d(lab, 5, 5, nlab,
+                                  im::kRegionPropEllipse | im::kRegionPropPerimeter, props);
+        if (!props.empty()) {
+            const auto& p = props[0];
+            const f64 pv[8] = {
+                as<f64>(p.area), p.centroid_x + 1.0, p.centroid_y + 1.0, p.major_axis_length,
+                p.minor_axis_length, p.eccentricity, p.orientation_deg, p.equiv_diameter};
+            dump_ref_vec("regionprops0", pv);
+        }
+    }
+
+    // 15. Features & segmentation: imgradientxy, cornermetric, dice/jaccard, poly2mask, graydist, regionfill
+    {
+        const f64 a[12] = {1, 2, 3, 4, 5, 6, 9, 10, 11, 16, 17, 18};
+        f64 gx[12]{}, gy[12]{};
+        (void)im::imgradientxy_2d(a, 3, 4, im::GradientMethod::kSobel, gx, gy);
+        dump_ref_vec("gradxy_sobel_x", gx);
+        dump_ref_vec("gradxy_sobel_y", gy);
+        (void)im::imgradientxy_2d(a, 3, 4, im::GradientMethod::kCentral, gx, gy);
+        dump_ref_vec("gradxy_central_x", gx);
+        dump_ref_vec("gradxy_central_y", gy);
+
+        keel::Array<f64> sq(8 * 8, 0.0), cm(8 * 8, 0.0);
+        for (usize c = 2; c <= 5; ++c) {
+            for (usize r = 2; r <= 5; ++r) sq[c * 8 + r] = 1.0;
+        }
+        (void)im::cornermetric_2d(sq.as_ref(), 8, 8, im::CornerMethod::kHarris, 0.04,
+                                  ArrayRef<f64>{}, cm.as_mut_ref());
+        dump_ref_vec("corner_harris", cm.as_ref());
+
+        const f64 px[4] = {2.0, 5.0, 5.0, 2.0};
+        const f64 py[4] = {2.0, 2.0, 5.0, 5.0};
+        u8 pm[36]{};
+        (void)im::poly2mask_2d(px, py, 6, 6, pm);
+        dump_ref_u8("poly2mask", pm);
+
+        f64 gimg[16]{}, gdist[16]{};
+        for (usize i = 0; i < 16; ++i) gimg[i] = 1.0 + 0.2 * as<f64>(i);
+        const usize s0[1] = {0};
+        (void)im::graydist_2d(gimg, 4, 4, s0, im::GeodesicMetric::kQuasiEuclidean, gdist);
+        dump_ref_vec("graydist_qe", gdist);
+
+        keel::Array<f64> hf(5 * 5, 0.0), ho(5 * 5, 0.0);
+        for (usize c = 0; c < 5; ++c) {
+            for (usize r = 0; r < 5; ++r) hf[c * 5 + r] = as<f64>(r) + 2.0 * as<f64>(c);
+        }
+        u8 hm[25]{};
+        hm[2 * 5 + 2] = 1;
+        hm[2 * 5 + 3] = 1;
+        (void)im::regionfill_2d(hf.as_ref(), hm, 5, 5, ho.as_mut_ref());
+        dump_ref_vec("regionfill", ho.as_ref());
+
+        keel::Array<f64> gw_in(8 * 8, 0.0), gw_out(8 * 8, 0.0);
+        for (usize c = 0; c < 8; ++c) {
+            for (usize r = 0; r < 8; ++r) {
+                gw_in[c * 8 + r] = keel::sin(as<f64>(r) * 0.5) + keel::cos(as<f64>(c) * 0.3);
+            }
+        }
+        (void)im::gradientweight_2d(gw_in.as_ref(), 8, 8, 1.5, 1.5, 2.0, 0.1, gw_out.as_mut_ref());
+        dump_ref_vec("gradientweight", gw_out.as_ref());
+    }
+}
+
 } // namespace
 
-int main() {
+int main(i32 argc, char** argv) {
+    for (i32 i = 1; i < argc; ++i) {
+        if (keel::StringRef(argv[i]) == keel::StringRef("--dump-ref")) {
+            dump_reference_outputs();
+            return 0;
+        }
+    }
+
     test_color();
     test_quality();
     test_threshold();
@@ -936,11 +1615,12 @@ int main() {
     test_transform();
     test_region();
     test_features_and_segment();
+    test_hardening_regressions();
 
     if (g_failures == 0) {
         keel::println("ALL keel::image TESTS PASSED");
         return 0;
     }
-    keel::eprintln("TOTAL FAILURES: {}", g_failures);
+    keel::eprintln("TOTAL FAILURES: %d", g_failures);
     return 1;
 }
